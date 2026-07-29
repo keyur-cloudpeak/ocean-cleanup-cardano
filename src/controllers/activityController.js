@@ -131,6 +131,39 @@ async function review(req, res) {
       return res.status(404).json({ ok: false, error: 'Activity not found' });
     }
 
+    // If approved, automatically mint the reward
+    let mintResult = null;
+    if (activity.status === 'approved') {
+      try {
+        if (!activity.contributorId) {
+          return res.status(400).json({ ok: false, error: 'Activity has no contributor to reward' });
+        }
+
+        const contributor = await findUserById(activity.contributorId);
+        if (!contributor?.walletAddress) {
+          return res.status(400).json({
+            ok: false,
+            error: 'Contributor has not linked a Cardano wallet address yet (POST /api/auth/wallet)'
+          });
+        }
+
+        const amount = req.body.amount || 10;
+        const tokenType = req.body.tokenType || 'OCEAN';
+
+        mintResult = await contractService.mintReward({
+          recipientAddress: contributor.walletAddress,
+          amount,
+          assetName: tokenType
+        });
+
+        const updatedActivity = await mintReward(req.params.id, amount, tokenType, mintResult.txHash);
+        return res.json({ ok: true, activity: updatedActivity, mint: mintResult });
+      } catch (mintError) {
+        console.error('Auto-mint error during approval:', mintError);
+        return res.status(500).json({ ok: false, error: mintError.message || 'Failed to mint reward automatically' });
+      }
+    }
+
     res.json({ ok: true, activity });
   } catch (error) {
     res.status(500).json({ ok: false, error: 'Failed to review activity' });

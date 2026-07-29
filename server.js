@@ -1,6 +1,7 @@
 import net from 'node:net';
 import app from './src/app.js';
 import { env } from './src/config/env.js';
+import { validateWalletSetup } from './src/config/wallet.js';
 
 const HOST = process.env.HOST || '0.0.0.0';
 
@@ -27,6 +28,14 @@ export function findAvailablePort(startPort, host = HOST) {
 }
 
 const startServer = async () => {
+  try {
+    // Validate wallet configuration during startup
+    validateWalletSetup();
+  } catch (walletError) {
+    console.error('❌ Wallet setup validation failed:', walletError.message);
+    process.exit(1);
+  }
+
   const requestedPort = Number(env.port);
   const port = await findAvailablePort(requestedPort, HOST);
 

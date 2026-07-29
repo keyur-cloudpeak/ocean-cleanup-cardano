@@ -1,11 +1,8 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
+import { isValidCardanoAddress, detectAddressNetwork } from '../config/wallet.js';
 import { findUserByUsername, findUserByEmail, createUser, findUserById, recordUserLogin, deleteUserLoginRecords, setUserWalletAddress } from '../services/userService.js';
-
-// Bech32 Cardano address prefixes we accept: mainnet (addr1) and
-// testnets/Preprod/Preview (addr_test1). Stake addresses aren't valid here.
-const CARDANO_ADDRESS_PATTERN = /^(addr1|addr_test1)[a-z0-9]+$/;
 
 function normalizeUsername(value) {
   return String(value || '').trim().toLowerCase();
@@ -136,16 +133,35 @@ async function updateWallet(req, res) {
     const decoded = jwt.verify(token, env.jwtSecret);
 
     const walletAddress = String(req.body.walletAddress || '').trim();
-    if (!walletAddress || !CARDANO_ADDRESS_PATTERN.test(walletAddress)) {
-      return res.status(400).json({ ok: false, message: 'A valid Cardano address is required' });
+    if (!walletAddress || !isValidCardanoAddress(walletAddress)) {
+      return res.status(400).json({ 
+        ok: false, 
+        message: 'A valid Cardano address is required (addr1 for mainnet or addr_test1 for testnet)' 
+      });
     }
+
+    // Detect network to provide helpful feedback
+    const network = detectAddressNetwork(walletAddress);
 
     const user = await setUserWalletAddress(decoded.id, walletAddress);
     if (!user) {
       return res.status(404).json({ ok: false, message: 'User not found' });
     }
 
-    res.json({ ok: true, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, walletAddress: user.walletAddress } });
+    res.json({ 
+      ok: true, 
+      user: { 
+        id: user.id, 
+        firstName: user.firstName, 
+        lastName: user.lastName, 
+        email: user.email, 
+        username: user.username, 
+        role: user.role, 
+        organizationId: user.organizationId, 
+        walletAddress: user.walletAddress 
+      },
+      network
+    });
   } catch (error) {
     console.error('Update wallet error:', error);
     res.status(401).json({ ok: false, message: 'Invalid token' });
