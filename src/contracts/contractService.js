@@ -11,15 +11,19 @@ import { blockchainConfig, assertMintingConfigured } from '../config/blockchain.
 
 function normalizeMetadataValue(value) {
   if (value === null || value === undefined) {
-    return null;
+    return '';
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
   }
 
   if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
+    return String(value);
   }
 
   if (typeof value === 'bigint') {
-    return Number(value);
+    return String(value);
   }
 
   if (typeof value === 'string') {
@@ -34,6 +38,18 @@ function normalizeMetadataValue(value) {
   return String(value).slice(0, 64);
 }
 
+function resolveVerifiedValue(activity) {
+  if (activity?.verified !== undefined && activity?.verified !== null) {
+    return activity.verified;
+  }
+
+  if (activity?.status === 'approved') {
+    return true;
+  }
+
+  return false;
+}
+
 export function buildRewardMetadata({ activity, label }) {
   const metadata = {
     label: normalizeMetadataValue(label),
@@ -43,7 +59,7 @@ export function buildRewardMetadata({ activity, label }) {
     activityId: normalizeMetadataValue(activity?.id),
     volunteers: normalizeMetadataValue(activity?.volunteers),
     contributorId: normalizeMetadataValue(activity?.contributorId),
-    verified: true
+    verified: normalizeMetadataValue(resolveVerifiedValue(activity))
   };
 
   return metadata;
