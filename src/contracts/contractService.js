@@ -9,6 +9,45 @@ import {
 } from '@lucid-evolution/lucid';
 import { blockchainConfig, assertMintingConfigured } from '../config/blockchain.js';
 
+function normalizeMetadataValue(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'bigint') {
+    return Number(value);
+  }
+
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) {
+      return '';
+    }
+
+    return text.length > 64 ? text.slice(0, 64) : text;
+  }
+
+  return String(value).slice(0, 64);
+}
+
+export function buildRewardMetadata({ activity, label }) {
+  const metadata = {
+    label: normalizeMetadataValue(label),
+    category: normalizeMetadataValue(activity?.category),
+    location: normalizeMetadataValue(activity?.location),
+    quantity: normalizeMetadataValue(activity?.quantity),
+    activityId: normalizeMetadataValue(activity?.id),
+    volunteers: normalizeMetadataValue(activity?.volunteers),
+    contributorId: normalizeMetadataValue(activity?.contributorId)
+  };
+
+  return metadata;
+}
+
 let lucidPromise = null;
 let mintingPolicyPromise = null;
 
@@ -71,7 +110,7 @@ export class ContractService {
    * @param {string} [params.assetName] - defaults to blockchainConfig.rewardAssetName
    * @returns {Promise<{ txHash: string, policyId: string, unit: string, amount: string }>}
    */
-  async mintReward({ recipientAddress, amount, assetName }) {
+  async mintReward({ recipientAddress, amount, assetName, activity }) {
     assertMintingConfigured();
 
     if (!recipientAddress) {
@@ -87,11 +126,16 @@ export class ContractService {
     const { mintingPolicy, minterKeyHash } = await getMintingPolicy();
     const policyId = mintingPolicyToId(mintingPolicy);
     const unit = policyId + fromText(assetName || blockchainConfig.rewardAssetName);
+    const rewardMetadata = buildRewardMetadata({
+      activity,
+      label: `Ocean Cleanup Reward - ${assetName || blockchainConfig.rewardAssetName}`.toLowerCase()
+    });
 
     const tx = await lucid
       .newTx()
       .mintAssets({ [unit]: quantity }, Data.void())
       .attach.MintingPolicy(mintingPolicy)
+      .attachMetadata(721, rewardMetadata)
       .pay.ToAddress(recipientAddress, { [unit]: quantity })
       .addSigner(await lucid.wallet().address())
       .complete();

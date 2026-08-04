@@ -227,7 +227,8 @@ async function review(req, res) {
         mintResult = await contractService.mintReward({
           recipientAddress: contributor.walletAddress,
           amount,
-          assetName: tokenType
+          assetName: tokenType,
+          activity
         });
 
         const updatedActivity = await mintReward(req.params.id, amount, tokenType, mintResult.txHash);
@@ -277,7 +278,8 @@ async function mint(req, res) {
     const mintResult = await contractService.mintReward({
       recipientAddress: contributor.walletAddress,
       amount,
-      assetName: tokenType
+      assetName: tokenType,
+      activity: existing
     });
 
     const activity = await mintReward(req.params.id, amount, tokenType, mintResult.txHash);
