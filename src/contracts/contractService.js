@@ -42,7 +42,8 @@ export function buildRewardMetadata({ activity, label }) {
     quantity: normalizeMetadataValue(activity?.quantity),
     activityId: normalizeMetadataValue(activity?.id),
     volunteers: normalizeMetadataValue(activity?.volunteers),
-    contributorId: normalizeMetadataValue(activity?.contributorId)
+    contributorId: normalizeMetadataValue(activity?.contributorId),
+    verified: true
   };
 
   return metadata;
