@@ -12,6 +12,7 @@ router.post('/', upload.single('image'), activityController.create);
 router.get('/:id', activityController.getById);
 router.post('/:id/review', authenticate, authorizeRoles('admin', 'verifier'), activityController.review);
 router.post('/:id/mint', authenticate, authorizeRoles('admin', 'verifier'), activityController.mint);
+router.patch('/:id', authenticate, upload.single('image'), activityController.update);
 router.delete('/:id', authenticate, activityController.remove);
 
 export default router;

@@ -3,6 +3,7 @@ import {
   listActivities,
   createActivity,
   getActivityById,
+  updateActivity,
   reviewActivity,
   mintReward,
   deleteActivity
@@ -124,6 +125,79 @@ async function getById(req, res) {
   }
 }
 
+async function update(req, res) {
+  try {
+    const existing = await getActivityById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ ok: false, error: 'Activity not found' });
+    }
+
+    if (req.user.role !== 'contributor' || req.user.id !== existing.contributorId) {
+      return res.status(403).json({ ok: false, error: 'Forbidden' });
+    }
+
+    if (existing.status === 'approved') {
+      return res.status(400).json({ ok: false, error: 'Approved activities cannot be edited' });
+    }
+
+    const {
+      category,
+      location,
+      quantity,
+      volunteers,
+      evidenceHash,
+      organizationId,
+      imageUrl,
+      lat,
+      lon,
+      gps,
+      notes
+    } = req.body;
+
+    const updates = {
+      category,
+      location,
+      quantity,
+      volunteers,
+      evidenceHash,
+      organizationId,
+      lat,
+      lon,
+      gps,
+      notes
+    };
+
+    if (req.file) {
+      const uploaded = await ipfsService.uploadFile(
+        req.file.buffer,
+        req.file.originalname,
+        req.file.mimetype
+      );
+      updates.imageCid = uploaded.cid;
+      updates.imageIpfsUrl = uploaded.ipfsUrl;
+      updates.imageGatewayUrl = uploaded.gatewayUrl;
+    } else if (imageUrl && imageUrl.startsWith('data:')) {
+      const parsed = parseBase64Image(imageUrl);
+      if (parsed) {
+        const uploaded = await ipfsService.uploadFile(parsed.buffer, parsed.filename, parsed.mimeType);
+        updates.imageCid = uploaded.cid;
+        updates.imageIpfsUrl = uploaded.ipfsUrl;
+        updates.imageGatewayUrl = uploaded.gatewayUrl;
+      }
+    }
+
+    const activity = await updateActivity(req.params.id, updates);
+    if (!activity) {
+      return res.status(400).json({ ok: false, error: 'Failed to update activity' });
+    }
+
+    res.json({ ok: true, activity });
+  } catch (error) {
+    console.error('Error updating activity:', error);
+    res.status(500).json({ ok: false, error: error.message || 'Failed to update activity' });
+  }
+}
+
 async function review(req, res) {
   try {
     const activity = await reviewActivity(req.params.id, req.body.status, req.body.reviewNote || '');
@@ -232,4 +306,4 @@ async function remove(req, res) {
   }
 }
 
-export default { list, create, getById, review, mint, remove };
+export default { list, create, getById, update, review, mint, remove };

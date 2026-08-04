@@ -158,6 +158,47 @@ export async function createActivity(payload) {
   return mapActivityRow(result.rows[0]);
 }
 
+export async function updateActivity(id, payload) {
+  const updates = [];
+  const values = [];
+  let index = 1;
+
+  const addField = (field, value) => {
+    if (value !== undefined) {
+      updates.push(`${field} = $${index++}`);
+      values.push(value);
+    }
+  };
+
+  addField('category', payload.category);
+  addField('location', payload.location);
+  addField('quantity', payload.quantity != null ? normalizeNumber(payload.quantity) : undefined);
+  addField('volunteers', payload.volunteers != null ? normalizeNumber(payload.volunteers) : undefined);
+  addField('evidence_hash', payload.evidenceHash);
+  addField('organization_id', payload.organizationId);
+  addField('image_cid', payload.imageCid);
+  addField('image_ipfs_url', payload.imageIpfsUrl);
+  addField('image_gateway_url', payload.imageGatewayUrl);
+  addField('lat', payload.lat != null ? normalizeNumber(payload.lat) : undefined);
+  addField('lon', payload.lon != null ? normalizeNumber(payload.lon) : undefined);
+  addField('gps', payload.gps);
+  addField('notes', payload.notes);
+
+  if (updates.length === 0) {
+    return getActivityById(id);
+  }
+
+  const result = await query(
+    `UPDATE activities
+     SET ${updates.join(', ')}
+     WHERE id = $${index}
+     RETURNING ${getActivitySelectColumns()}`,
+    [...values, id]
+  );
+
+  return mapActivityRow(result.rows[0]);
+}
+
 export async function reviewActivity(id, status, reviewNote = '') {
   const normalizedStatus = ALLOWED_STATUSES.has(normalizeStatus(status)) ? normalizeStatus(status) : 'approved';
   const result = await query(
