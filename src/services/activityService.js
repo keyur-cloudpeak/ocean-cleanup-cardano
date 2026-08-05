@@ -261,7 +261,7 @@ export async function getDashboardStats() {
        COALESCE(SUM(quantity), 0) AS total_kg_collected,
        COALESCE(SUM(quantity) FILTER (WHERE status = 'approved'), 0) AS approved_kg_collected,
        COALESCE(SUM(volunteers), 0)::int AS total_volunteers,
-       COUNT(DISTINCT organization_id)::int AS partner_orgs,
+       (select count(*) from organizations) as partner_orgs,
        COUNT(*) FILTER (WHERE submitted_at >= NOW() - INTERVAL '30 days')::int AS recent_activities,
        MAX(submitted_at) AS latest_activity_at,
        (SELECT COUNT(*) FROM users WHERE role = 'verifier')::int AS verifier_count,
