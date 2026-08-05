@@ -37,6 +37,13 @@ function mapReward(row) {
 function mapActivityRow(row) {
   if (!row) return null;
 
+  // Normalise image arrays: DB returns TEXT[] but may be null or legacy string
+  const toArray = (val) => {
+    if (!val) return [];
+    if (Array.isArray(val)) return val;
+    return [val]; // legacy single-string coercion
+  };
+
   return {
     id: row.id,
     category: row.category,
@@ -46,9 +53,9 @@ function mapActivityRow(row) {
     evidenceHash: row.evidence_hash,
     contributorId: row.contributor_id,
     organizationId: row.organization_id,
-    imageCid: row.image_cid,
-    imageIpfsUrl: row.image_ipfs_url,
-    imageGatewayUrl: row.image_gateway_url,
+    imageCid: toArray(row.image_cid),
+    imageIpfsUrl: toArray(row.image_ipfs_url),
+    imageGatewayUrl: toArray(row.image_gateway_url),
     lat: row.lat,
     lon: row.lon,
     gps: row.gps,
@@ -144,9 +151,9 @@ export async function createActivity(payload) {
       payload.evidenceHash || null,
       payload.contributorId || null,
       payload.organizationId || null,
-      payload.imageCid || null,
-      payload.imageIpfsUrl || null,
-      payload.imageGatewayUrl || null,
+      payload.imageCids && payload.imageCids.length > 0 ? payload.imageCids : null,
+      payload.imageIpfsUrls && payload.imageIpfsUrls.length > 0 ? payload.imageIpfsUrls : null,
+      payload.imageGatewayUrls && payload.imageGatewayUrls.length > 0 ? payload.imageGatewayUrls : null,
       normalizeNumber(payload.lat),
       normalizeNumber(payload.lon),
       payload.gps || null,
@@ -176,9 +183,9 @@ export async function updateActivity(id, payload) {
   addField('volunteers', payload.volunteers != null ? normalizeNumber(payload.volunteers) : undefined);
   addField('evidence_hash', payload.evidenceHash);
   addField('organization_id', payload.organizationId);
-  addField('image_cid', payload.imageCid);
-  addField('image_ipfs_url', payload.imageIpfsUrl);
-  addField('image_gateway_url', payload.imageGatewayUrl);
+  addField('image_cid', payload.imageCids !== undefined ? (payload.imageCids.length > 0 ? payload.imageCids : null) : undefined);
+  addField('image_ipfs_url', payload.imageIpfsUrls !== undefined ? (payload.imageIpfsUrls.length > 0 ? payload.imageIpfsUrls : null) : undefined);
+  addField('image_gateway_url', payload.imageGatewayUrls !== undefined ? (payload.imageGatewayUrls.length > 0 ? payload.imageGatewayUrls : null) : undefined);
   addField('lat', payload.lat != null ? normalizeNumber(payload.lat) : undefined);
   addField('lon', payload.lon != null ? normalizeNumber(payload.lon) : undefined);
   addField('gps', payload.gps);

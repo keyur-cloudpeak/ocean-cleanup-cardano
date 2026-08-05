@@ -23,6 +23,32 @@ function parseBase64Image(dataUri) {
   return { buffer, mimeType, filename };
 }
 
+// Upload an array of multer file objects to IPFS and return { cids, ipfsUrls, gatewayUrls }
+async function uploadMultipleFiles(files) {
+  const results = await Promise.all(
+    files.map((f) => ipfsService.uploadFile(f.buffer, f.originalname, f.mimetype))
+  );
+  return {
+    cids: results.map((r) => r.cid),
+    ipfsUrls: results.map((r) => r.ipfsUrl),
+    gatewayUrls: results.map((r) => r.gatewayUrl)
+  };
+}
+
+// Upload an array of base64 data URIs to IPFS and return { cids, ipfsUrls, gatewayUrls }
+async function uploadMultipleBase64(dataUris) {
+  const parsed = dataUris.map(parseBase64Image).filter(Boolean);
+  if (parsed.length === 0) return { cids: [], ipfsUrls: [], gatewayUrls: [] };
+  const results = await Promise.all(
+    parsed.map((p) => ipfsService.uploadFile(p.buffer, p.filename, p.mimeType))
+  );
+  return {
+    cids: results.map((r) => r.cid),
+    ipfsUrls: results.map((r) => r.ipfsUrl),
+    gatewayUrls: results.map((r) => r.gatewayUrl)
+  };
+}
+
 async function list(req, res) {
   try {
     const { activities, filters } = await listActivities(req.query.status);
@@ -46,7 +72,8 @@ async function create(req, res) {
       evidenceHash,
       contributorId,
       organizationId,
-      imageUrl,
+      imageUrls,   // JSON-encoded array of base64 strings (fallback)
+      imageUrl,    // legacy single base64 (fallback)
       lat,
       lon,
       gps,
@@ -58,26 +85,31 @@ async function create(req, res) {
       return res.status(400).json({ ok: false, error: 'Missing required fields' });
     }
 
-    let imageCid = null;
-    let imageIpfsUrl = null;
-    let imageGatewayUrl = null;
+    let imageCids = [];
+    let imageIpfsUrls = [];
+    let imageGatewayUrls = [];
 
-    if (req.file) {
-      const uploaded = await ipfsService.uploadFile(
-        req.file.buffer,
-        req.file.originalname,
-        req.file.mimetype
-      );
-      imageCid = uploaded.cid;
-      imageIpfsUrl = uploaded.ipfsUrl;
-      imageGatewayUrl = uploaded.gatewayUrl;
+    // Priority 1: multer multipart files
+    if (req.files && req.files.length > 0) {
+      const uploaded = await uploadMultipleFiles(req.files);
+      imageCids = uploaded.cids;
+      imageIpfsUrls = uploaded.ipfsUrls;
+      imageGatewayUrls = uploaded.gatewayUrls;
+    } else if (imageUrls) {
+      // Priority 2: JSON array of base64 data URIs
+      const uris = typeof imageUrls === 'string' ? JSON.parse(imageUrls) : imageUrls;
+      const uploaded = await uploadMultipleBase64(uris);
+      imageCids = uploaded.cids;
+      imageIpfsUrls = uploaded.ipfsUrls;
+      imageGatewayUrls = uploaded.gatewayUrls;
     } else if (imageUrl && imageUrl.startsWith('data:')) {
+      // Priority 3: legacy single base64
       const parsed = parseBase64Image(imageUrl);
       if (parsed) {
         const uploaded = await ipfsService.uploadFile(parsed.buffer, parsed.filename, parsed.mimeType);
-        imageCid = uploaded.cid;
-        imageIpfsUrl = uploaded.ipfsUrl;
-        imageGatewayUrl = uploaded.gatewayUrl;
+        imageCids = [uploaded.cid];
+        imageIpfsUrls = [uploaded.ipfsUrl];
+        imageGatewayUrls = [uploaded.gatewayUrl];
       }
     }
 
@@ -88,9 +120,9 @@ async function create(req, res) {
       evidenceHash,
       contributorId,
       organizationId,
-      imageCid,
-      imageIpfsUrl,
-      imageGatewayUrl,
+      imageCids,
+      imageIpfsUrls,
+      imageGatewayUrls,
       lat,
       lon,
       gps,
@@ -147,7 +179,8 @@ async function update(req, res) {
       volunteers,
       evidenceHash,
       organizationId,
-      imageUrl,
+      imageUrls,  // JSON array of base64 data URIs
+      imageUrl,   // legacy single base64
       lat,
       lon,
       gps,
@@ -167,22 +200,24 @@ async function update(req, res) {
       notes
     };
 
-    if (req.file) {
-      const uploaded = await ipfsService.uploadFile(
-        req.file.buffer,
-        req.file.originalname,
-        req.file.mimetype
-      );
-      updates.imageCid = uploaded.cid;
-      updates.imageIpfsUrl = uploaded.ipfsUrl;
-      updates.imageGatewayUrl = uploaded.gatewayUrl;
+    if (req.files && req.files.length > 0) {
+      const uploaded = await uploadMultipleFiles(req.files);
+      updates.imageCids = uploaded.cids;
+      updates.imageIpfsUrls = uploaded.ipfsUrls;
+      updates.imageGatewayUrls = uploaded.gatewayUrls;
+    } else if (imageUrls) {
+      const uris = typeof imageUrls === 'string' ? JSON.parse(imageUrls) : imageUrls;
+      const uploaded = await uploadMultipleBase64(uris);
+      updates.imageCids = uploaded.cids;
+      updates.imageIpfsUrls = uploaded.ipfsUrls;
+      updates.imageGatewayUrls = uploaded.gatewayUrls;
     } else if (imageUrl && imageUrl.startsWith('data:')) {
       const parsed = parseBase64Image(imageUrl);
       if (parsed) {
         const uploaded = await ipfsService.uploadFile(parsed.buffer, parsed.filename, parsed.mimeType);
-        updates.imageCid = uploaded.cid;
-        updates.imageIpfsUrl = uploaded.ipfsUrl;
-        updates.imageGatewayUrl = uploaded.gatewayUrl;
+        updates.imageCids = [uploaded.cid];
+        updates.imageIpfsUrls = [uploaded.ipfsUrl];
+        updates.imageGatewayUrls = [uploaded.gatewayUrl];
       }
     }
 
