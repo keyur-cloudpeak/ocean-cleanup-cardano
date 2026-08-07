@@ -21,12 +21,15 @@ async function signup(req, res) {
     const password = String(req.body.password || '');
     const role = String(req.body.role || '').trim();
     const organizationId = req.body.organizationId || null;
+    const jobTitle = String(req.body.jobTitle || '').trim() || null;
+    const yearsExperience = String(req.body.yearsExperience || '').trim() || null;
+    const walletAddress = String(req.body.walletAddress || '').trim() || null;
 
     if (!firstName || !lastName || !email || !username || !password || !role) {
       return res.status(400).json({ ok: false, message: 'All fields are required' });
     }
 
-    const validRoles = ['admin', 'contributor', 'verifier'];
+    const validRoles = ['admin', 'contributor', 'verifier', 'citizen'];
     if (!validRoles.includes(role)) {
       return res.status(400).json({ ok: false, message: 'Invalid role' });
     }
@@ -45,10 +48,10 @@ async function signup(req, res) {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await createUser({ firstName, lastName, email, username, password: hashedPassword, role, organizationId });
+    const user = await createUser({ firstName, lastName, email, username, password: hashedPassword, role, organizationId, jobTitle, yearsExperience, walletAddress });
 
     const token = jwt.sign({ id: user.id, role: user.role }, env.jwtSecret, { expiresIn: '24h' });
-    res.json({ ok: true, token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, walletAddress: user.walletAddress } });
+    res.json({ ok: true, token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, jobTitle: user.jobTitle, yearsExperience: user.yearsExperience, walletAddress: user.walletAddress } });
   } catch (error) {
     console.error('Signup error:', error);
     res.status(500).json({ ok: false, message: 'Internal server error' });
@@ -93,7 +96,7 @@ async function login(req, res) {
       console.error('Failed to record user login:', loginError);
     }
 
-    res.json({ ok: true, token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, walletAddress: user.walletAddress } });
+    res.json({ ok: true, token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, jobTitle: user.jobTitle, yearsExperience: user.yearsExperience, walletAddress: user.walletAddress } });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ ok: false, message: 'Internal server error' });
@@ -115,7 +118,7 @@ async function verify(req, res) {
       return res.status(401).json({ ok: false, message: 'User not found' });
     }
 
-    res.json({ ok: true, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, walletAddress: user.walletAddress } });
+    res.json({ ok: true, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, jobTitle: user.jobTitle, yearsExperience: user.yearsExperience, walletAddress: user.walletAddress } });
   } catch (error) {
     console.error('Verify error:', error);
     res.status(401).json({ ok: false, message: 'Invalid token' });

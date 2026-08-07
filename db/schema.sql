@@ -8,7 +8,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role') THEN
-        CREATE TYPE user_role AS ENUM ('admin', 'contributor', 'verifier');
+        CREATE TYPE user_role AS ENUM ('admin', 'contributor', 'verifier', 'citizen');
     END IF;
 
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'activity_status') THEN
@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS users (
     role            user_role NOT NULL,
     is_active       BOOLEAN NOT NULL DEFAULT TRUE,
     organization_id UUID REFERENCES organizations(org_id),
+    job_title       TEXT,
+    years_experience TEXT,
     wallet_address  TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT users_email_unique UNIQUE (email),
@@ -35,6 +37,8 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- Safe to re-run against a database created before wallet_address existed.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_address TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS job_title TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS years_experience TEXT;
 
 CREATE TABLE IF NOT EXISTS activities (
     id                  TEXT PRIMARY KEY,
@@ -144,5 +148,4 @@ CREATE INDEX IF NOT EXISTS idx_organizations_parent_org ON organizations (parent
 CREATE INDEX IF NOT EXISTS idx_organizations_joined_at  ON organizations (joined_at DESC);
 
 COMMIT;
-
 

@@ -21,6 +21,8 @@ function mapUserRow(row) {
     role: row.role,
     active: row.is_active,
     organizationId: row.organization_id || null,
+    jobTitle: row.job_title || null,
+    yearsExperience: row.years_experience || null,
     walletAddress: row.wallet_address || null,
     createdAt: row.created_at
   };
@@ -28,7 +30,7 @@ function mapUserRow(row) {
 
 export async function getUsers() {
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, wallet_address, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, created_at
      FROM users
      ORDER BY created_at DESC`
   );
@@ -42,7 +44,7 @@ export async function saveUsers() {
 export async function findUserByUsername(username) {
   const normalizedUsername = normalizeUsername(username);
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, wallet_address, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, created_at
      FROM users
      WHERE LOWER(username) = $1
      LIMIT 1`,
@@ -55,7 +57,7 @@ export async function findUserByUsername(username) {
 export async function findUserByEmail(email) {
   const normalizedEmail = normalizeEmail(email);
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, wallet_address, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, created_at
      FROM users
      WHERE LOWER(email) = $1
      LIMIT 1`,
@@ -71,9 +73,9 @@ export async function createUser(userData) {
   const email = normalizeEmail(userData.email);
 
   const result = await query(
-    `INSERT INTO users (id, first_name, last_name, email, username, password_hash, role, is_active, organization_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, wallet_address, created_at`,
+    `INSERT INTO users (id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, created_at`,
     [
       id,
       userData.firstName,
@@ -83,7 +85,10 @@ export async function createUser(userData) {
       userData.password,
       userData.role,
       userData.active !== false,
-      userData.organizationId || null
+      userData.organizationId || null,
+      userData.jobTitle || null,
+      userData.yearsExperience || null,
+      userData.walletAddress || null
     ]
   );
 
@@ -121,7 +126,7 @@ export async function deleteUserLoginRecords(userId) {
 
 export async function findUserById(id) {
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, wallet_address, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, created_at
      FROM users
      WHERE id = $1
      LIMIT 1`,
@@ -136,7 +141,7 @@ export async function setUserWalletAddress(id, walletAddress) {
     `UPDATE users
      SET wallet_address = $2
      WHERE id = $1
-     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, wallet_address, created_at`,
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, created_at`,
     [id, walletAddress || null]
   );
 
