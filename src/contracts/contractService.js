@@ -117,17 +117,26 @@ export class ContractService {
     return { ok: true, id };
   }
 
+  // A simple queue to serialize minting operations and prevent UTXO contention
+  mintQueue = Promise.resolve();
+
+  async mintReward(params) {
+    return new Promise((resolve, reject) => {
+      this.mintQueue = this.mintQueue.then(async () => {
+        try {
+          const result = await this._mintRewardUnsafe(params);
+          resolve(result);
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+  }
+
   /**
-   * Mints `amount` units of `assetName` under the reward policy and sends
-   * them to `recipientAddress`.
-   *
-   * @param {object} params
-   * @param {string} params.recipientAddress - bech32 Cardano address (the contributor's wallet)
-   * @param {number|string} params.amount - whole-unit token amount (no decimals here)
-   * @param {string} [params.assetName] - defaults to blockchainConfig.rewardAssetName
-   * @returns {Promise<{ txHash: string, policyId: string, unit: string, amount: string }>}
+   * Internal unsafe mint. Callers should use mintReward() to queue calls safely.
    */
-  async mintReward({ recipientAddress, amount, assetName, activity }) {
+  async _mintRewardUnsafe({ recipientAddress, amount, assetName, activity }) {
     assertMintingConfigured();
 
     if (!recipientAddress) {
@@ -159,6 +168,17 @@ export class ContractService {
 
     const signedTx = await tx.sign.withWallet().complete();
     const txHash = await signedTx.submit();
+
+    // Wait for the transaction to hit the chain to avoid spending the same UTXO again
+    try {
+      if (typeof lucid.awaitTx === 'function') {
+        await lucid.awaitTx(txHash);
+      } else {
+        await new Promise(r => setTimeout(r, 20000));
+      }
+    } catch (err) {
+      console.warn(`[ContractService] wait for tx ${txHash} failed, continuing anyway:`, err.message);
+    }
 
     return {
       txHash,
