@@ -6,6 +6,7 @@ import dashboardRoutes from './routes/dashboardRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import organizationRoutes from './routes/organizationRoutes.js';
 import contributorRoutes from './routes/contributorRoutes.js';
+import citizenRoutes from './routes/citizenRoutes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -21,6 +22,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/admin/organizations', organizationRoutes);
 app.use('/api/contributor', contributorRoutes);
+app.use('/api/citizen', citizenRoutes);
 app.use(errorHandler);
 
 export default app;
