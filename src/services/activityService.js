@@ -258,6 +258,83 @@ export async function deleteActivity(id) {
   return result.rowCount > 0;
 }
 
+export async function getContributorStats(contributorId) {
+  // Per-contributor aggregates + monthly deltas in one query
+  const result = await query(
+    `SELECT
+       COUNT(*)::int                                                             AS total_activities,
+       COUNT(*) FILTER (WHERE status = 'approved')::int                         AS approved_activities,
+       COUNT(*) FILTER (WHERE status = 'pending')::int                          AS pending_activities,
+       COUNT(*) FILTER (WHERE status = 'rejected')::int                         AS rejected_activities,
+       COALESCE(SUM(quantity) FILTER (WHERE status = 'approved'), 0)            AS total_kg,
+       COALESCE(SUM(volunteers) FILTER (WHERE status = 'approved'), 0)::int     AS total_volunteers,
+       COALESCE(SUM(reward_amount) FILTER (WHERE status = 'approved'), 0)       AS total_tokens,
+       -- This month
+       COUNT(*) FILTER (WHERE submitted_at >= date_trunc('month', NOW()))::int              AS month_activities,
+       COALESCE(SUM(quantity) FILTER (WHERE status = 'approved'
+         AND submitted_at >= date_trunc('month', NOW())), 0)                    AS month_kg,
+       COALESCE(SUM(volunteers) FILTER (WHERE status = 'approved'
+         AND submitted_at >= date_trunc('month', NOW())), 0)::int               AS month_volunteers,
+       -- Last month (for deltas)
+       COALESCE(SUM(quantity) FILTER (WHERE status = 'approved'
+         AND submitted_at >= date_trunc('month', NOW()) - INTERVAL '1 month'
+         AND submitted_at <  date_trunc('month', NOW())), 0)                    AS last_month_kg,
+       COALESCE(SUM(volunteers) FILTER (WHERE status = 'approved'
+         AND submitted_at >= date_trunc('month', NOW()) - INTERVAL '1 month'
+         AND submitted_at <  date_trunc('month', NOW())), 0)::int               AS last_month_volunteers
+     FROM activities
+     WHERE contributor_id = $1`,
+    [contributorId]
+  );
+
+  // Rank: position of this contributor among all contributors by total approved kg (higher = better)
+  const rankResult = await query(
+    `SELECT rank
+     FROM (
+       SELECT contributor_id,
+              RANK() OVER (ORDER BY COALESCE(SUM(quantity) FILTER (WHERE status = 'approved'), 0) DESC) AS rank
+       FROM activities
+       WHERE contributor_id IS NOT NULL
+       GROUP BY contributor_id
+     ) ranked
+     WHERE contributor_id = $1`,
+    [contributorId]
+  );
+
+  // Total contributor count (for "top X%" calculation)
+  const countResult = await query(
+    `SELECT COUNT(DISTINCT contributor_id)::int AS total
+     FROM activities
+     WHERE contributor_id IS NOT NULL`
+  );
+
+  const row = result.rows[0] || {};
+  const rank = Number(rankResult.rows[0]?.rank) || null;
+  const totalContributors = Number(countResult.rows[0]?.total) || 1;
+  const topPercent = rank ? Math.round((rank / totalContributors) * 100) : null;
+
+  return {
+    totalActivities:   Number(row.total_activities)  || 0,
+    approvedActivities:Number(row.approved_activities)|| 0,
+    pendingActivities: Number(row.pending_activities) || 0,
+    rejectedActivities:Number(row.rejected_activities)|| 0,
+    totalKg:           Number(row.total_kg)           || 0,
+    totalVolunteers:   Number(row.total_volunteers)   || 0,
+    totalTokens:       Number(row.total_tokens)       || 0,
+    monthActivities:   Number(row.month_activities)   || 0,
+    monthKg:           Number(row.month_kg)           || 0,
+    monthVolunteers:   Number(row.month_volunteers)   || 0,
+    lastMonthKg:       Number(row.last_month_kg)      || 0,
+    lastMonthVolunteers:Number(row.last_month_volunteers)||0,
+    rank,
+    totalContributors,
+    topPercent,
+    approvalRate: (Number(row.total_activities) || 0) > 0
+      ? Math.round((Number(row.approved_activities) / Number(row.total_activities)) * 100)
+      : 0,
+  };
+}
+
 export async function getDashboardStats() {
   const result = await query(
     `SELECT
