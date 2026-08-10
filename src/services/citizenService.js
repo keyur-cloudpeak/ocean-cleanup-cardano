@@ -2,22 +2,22 @@ import { query } from '../config/connection.js';
 
 // ─── Badge definitions ────────────────────────────────────────────────────────
 const BADGE_DEFS = [
-  { id: 'first_report',    icon: '🥇', title: 'First Report',  desc: 'Submit your first report',    threshold: 1,   field: 'total_reports' },
-  { id: 'tide_guardian',   icon: '🌊', title: 'Tide Guardian', desc: '3 reports submitted',           threshold: 3,   field: 'total_reports' },
-  { id: 'spot_mapper',     icon: '📍', title: 'Spot Mapper',   desc: '5 unique locations',            threshold: 5,   field: 'unique_locations' },
-  { id: 'reef_defender',   icon: '🐚', title: 'Reef Defender', desc: '7 reports submitted',           threshold: 7,   field: 'total_reports' },
-  { id: 'streak_30',       icon: '🔥', title: '30-Day Streak', desc: 'Active 30 days in a row',       threshold: 30,  field: 'streak_days' },
-  { id: 'top_100',         icon: '🏆', title: 'Top 100',       desc: 'Reach city rank #100 or better',threshold: 100, field: 'city_rank_inv' },
-  { id: 'harbor_hero',     icon: '⚓', title: 'Harbor Hero',   desc: '100 kg logged',                 threshold: 100, field: 'total_kg' },
-  { id: 'crew_leader',     icon: '👥', title: 'Crew Leader',   desc: '10+ volunteers mobilized',      threshold: 10,  field: 'total_volunteers' },
+  { id: 'first_report', icon: '🥇', title: 'First Report', desc: 'Submit your first report', threshold: 1, field: 'total_reports' },
+  { id: 'tide_guardian', icon: '🌊', title: 'Tide Guardian', desc: '3 reports submitted', threshold: 3, field: 'total_reports' },
+  { id: 'spot_mapper', icon: '📍', title: 'Spot Mapper', desc: '5 unique locations', threshold: 5, field: 'unique_locations' },
+  { id: 'reef_defender', icon: '🐚', title: 'Reef Defender', desc: '7 reports submitted', threshold: 7, field: 'total_reports' },
+  { id: 'streak_30', icon: '🔥', title: '30-Day Streak', desc: 'Active 30 days in a row', threshold: 30, field: 'streak_days' },
+  { id: 'top_100', icon: '🏆', title: 'Top 100', desc: 'Reach city rank #100 or better', threshold: 100, field: 'city_rank_inv' },
+  { id: 'harbor_hero', icon: '⚓', title: 'Harbor Hero', desc: '100 kg logged', threshold: 100, field: 'total_kg' },
+  { id: 'crew_leader', icon: '👥', title: 'Crew Leader', desc: '10+ volunteers mobilized', threshold: 10, field: 'total_volunteers' },
 ];
 
 // Determine current tier based on report count
 function getTier(reportCount) {
-  if (reportCount >= 7)  return { label: '🐚 Reef Defender',  next: null,             nextAt: null  };
-  if (reportCount >= 3)  return { label: '🌊 Tide Guardian',  next: 'Reef Defender',   nextAt: 7     };
-  if (reportCount >= 1)  return { label: '🥇 First Reporter', next: 'Tide Guardian',   nextAt: 3     };
-  return               { label: '🌱 Newcomer',            next: 'First Reporter',  nextAt: 1     };
+  if (reportCount >= 7) return { label: '🐚 Reef Defender', next: null, nextAt: null };
+  if (reportCount >= 3) return { label: '🌊 Tide Guardian', next: 'Reef Defender', nextAt: 7 };
+  if (reportCount >= 1) return { label: '🥇 First Reporter', next: 'Tide Guardian', nextAt: 3 };
+  return { label: '🌱 Newcomer', next: 'First Reporter', nextAt: 1 };
 }
 
 // Compute which badges are earned based on stats
@@ -25,11 +25,11 @@ function computeBadges(stats) {
   return BADGE_DEFS.map(def => {
     let progress = 0;
     switch (def.field) {
-      case 'total_reports':     progress = stats.totalReports;      break;
-      case 'unique_locations':  progress = stats.uniqueLocations;   break;
-      case 'streak_days':       progress = stats.streakDays;        break;
-      case 'total_kg':          progress = stats.totalKg;           break;
-      case 'total_volunteers':  progress = stats.totalVolunteers;   break;
+      case 'total_reports': progress = stats.totalReports; break;
+      case 'unique_locations': progress = stats.uniqueLocations; break;
+      case 'streak_days': progress = stats.streakDays; break;
+      case 'total_kg': progress = stats.totalKg; break;
+      case 'total_volunteers': progress = stats.totalVolunteers; break;
       case 'city_rank_inv':
         // Invert rank: #1 = 100, #100 = 1; treat rank 0 (no rank) as 0
         progress = stats.cityRank > 0 ? Math.max(0, 101 - stats.cityRank) : 0;
@@ -116,17 +116,17 @@ export async function getCitizenStats(citizenId) {
   const streakDays = Number(streakResult.rows[0]?.streak_days) || 0;
 
   const stats = {
-    totalReports:     Number(row.total_reports)    || 0,
-    uniqueLocations:  Number(row.unique_locations)  || 0,
-    totalKg:          Number(row.total_kg)          || 0,
-    totalVolunteers:  Number(row.total_volunteers)  || 0,
-    approvedReports:  Number(row.approved_reports)  || 0,
-    pendingReports:   Number(row.pending_reports)   || 0,
-    rejectedReports:  Number(row.rejected_reports)  || 0,
-    weekReports:      Number(row.week_reports)      || 0,
+    totalReports: Number(row.total_reports) || 0,
+    uniqueLocations: Number(row.unique_locations) || 0,
+    totalKg: Number(row.total_kg) || 0,
+    totalVolunteers: Number(row.total_volunteers) || 0,
+    approvedReports: Number(row.approved_reports) || 0,
+    pendingReports: Number(row.pending_reports) || 0,
+    rejectedReports: Number(row.rejected_reports) || 0,
+    weekReports: Number(row.week_reports) || 0,
     cityRank,
     streakDays,
-    memberSince:      row.member_since ? new Date(row.member_since).toISOString() : null,
+    memberSince: row.member_since ? new Date(row.member_since).toISOString() : null,
   };
 
   const tier = getTier(stats.totalReports);
@@ -178,15 +178,15 @@ export async function getCitizenLeaderboard(citizenId) {
   );
 
   const rows = result.rows.map(r => ({
-    userId:       r.citizen_id,
-    firstName:    r.first_name,
-    lastName:     r.last_name,
-    username:     r.username,
-    initials:     `${r.first_name?.[0] || ''}${r.last_name?.[0] || ''}`.toUpperCase(),
-    weekReports:  Number(r.week_reports) || 0,
-    weekKg:       Number(r.week_kg)      || 0,
-    rank:         Number(r.rank)         || 0,
-    isMe:         r.citizen_id === citizenId,
+    userId: r.citizen_id,
+    firstName: r.first_name,
+    lastName: r.last_name,
+    username: r.username,
+    initials: `${r.first_name?.[0] || ''}${r.last_name?.[0] || ''}`.toUpperCase(),
+    weekReports: Number(r.week_reports) || 0,
+    weekKg: Number(r.week_kg) || 0,
+    rank: Number(r.rank) || 0,
+    isMe: r.citizen_id === citizenId,
   }));
 
   // All citizens are always in the list — no separate myRow needed
@@ -219,18 +219,18 @@ export async function getCitizenFeed(limit = 5) {
   );
 
   return result.rows.map(r => ({
-    id:          r.id,
-    location:    r.location,
-    quantity:    Number(r.quantity) || 0,
-    volunteers:  Number(r.volunteers) || 0,
-    category:    r.category,
-    status:      r.status,
+    id: r.id,
+    location: r.location,
+    quantity: Number(r.quantity) || 0,
+    volunteers: Number(r.volunteers) || 0,
+    category: r.category,
+    status: r.status,
     submittedAt: r.submitted_at,
-    notes:       r.notes,
-    firstName:   r.first_name || 'Anonymous',
-    lastName:    r.last_name  || '',
-    username:    r.username   || 'anon',
-    initials:    r.first_name ? `${r.first_name[0]}${r.last_name?.[0] || ''}`.toUpperCase() : 'AN',
+    notes: r.notes,
+    firstName: r.first_name || 'Anonymous',
+    lastName: r.last_name || '',
+    username: r.username || 'anon',
+    initials: r.first_name ? `${r.first_name[0]}${r.last_name?.[0] || ''}`.toUpperCase() : 'AN',
   }));
 }
 
@@ -239,19 +239,7 @@ export async function getCitizenFeed(limit = 5) {
  */
 export async function getCitizenActivities(citizenId) {
   const result = await query(
-    `SELECT
-       a.id,
-       a.location,
-       a.quantity,
-       a.volunteers,
-       a.category,
-       a.status,
-       a.submitted_at,
-       a.notes,
-       a.image_ipfs_url,
-       a.review_note,
-       a.reward_amount,
-       a.reward_tx_hash
+    `SELECT *
      FROM activities a
      WHERE a.contributor_id = $1
      ORDER BY a.submitted_at DESC`,
@@ -259,16 +247,16 @@ export async function getCitizenActivities(citizenId) {
   );
 
   return result.rows.map(r => ({
-    id:          r.id,
-    location:    r.location,
-    quantity:    Number(r.quantity) || 0,
-    volunteers:  Number(r.volunteers) || 0,
-    category:    r.category,
-    status:      r.status,
+    id: r.id,
+    location: r.location,
+    quantity: Number(r.quantity) || 0,
+    volunteers: Number(r.volunteers) || 0,
+    category: r.category,
+    status: r.status,
     submittedAt: r.submitted_at,
-    notes:       r.notes,
+    notes: r.notes,
     imageIpfsUrl: r.image_ipfs_url ? (Array.isArray(r.image_ipfs_url) ? r.image_ipfs_url : [r.image_ipfs_url]) : [],
-    reviewNote:  r.review_note,
+    reviewNote: r.review_note,
     rewardAmount: Number(r.reward_amount) || null,
     rewardTxHash: r.reward_tx_hash || null
   }));
