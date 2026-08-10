@@ -1,4 +1,4 @@
-import { getCitizenStats, getCitizenLeaderboard, getCitizenFeed } from '../services/citizenService.js';
+import { getCitizenStats, getCitizenLeaderboard, getCitizenFeed, getCitizenActivities } from '../services/citizenService.js';
 
 /**
  * GET /api/citizen/stats
@@ -47,4 +47,21 @@ async function getFeed(req, res) {
   }
 }
 
-export default { getStats, getLeaderboard, getFeed };
+/**
+ * GET /api/citizen/activities
+ * Returns the authenticated citizen's activities
+ */
+async function getActivities(req, res) {
+  try {
+    const citizenId = req.user?.id;
+    if (!citizenId) return res.status(401).json({ ok: false, error: 'Unauthorized' });
+
+    const activities = await getCitizenActivities(citizenId);
+    res.json({ ok: true, activities });
+  } catch (err) {
+    console.error('Citizen activities error:', err);
+    res.status(500).json({ ok: false, error: 'Failed to load citizen activities' });
+  }
+}
+
+export default { getStats, getLeaderboard, getFeed, getActivities };

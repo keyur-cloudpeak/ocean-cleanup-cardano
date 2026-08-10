@@ -233,3 +233,43 @@ export async function getCitizenFeed(limit = 5) {
     initials:    r.first_name ? `${r.first_name[0]}${r.last_name?.[0] || ''}`.toUpperCase() : 'AN',
   }));
 }
+
+/**
+ * Get all activities for a specific citizen.
+ */
+export async function getCitizenActivities(citizenId) {
+  const result = await query(
+    `SELECT
+       a.id,
+       a.location,
+       a.quantity,
+       a.volunteers,
+       a.category,
+       a.status,
+       a.submitted_at,
+       a.notes,
+       a.image_ipfs_url,
+       a.review_note,
+       a.reward_amount,
+       a.reward_tx_hash
+     FROM activities a
+     WHERE a.contributor_id = $1
+     ORDER BY a.submitted_at DESC`,
+    [citizenId]
+  );
+
+  return result.rows.map(r => ({
+    id:          r.id,
+    location:    r.location,
+    quantity:    Number(r.quantity) || 0,
+    volunteers:  Number(r.volunteers) || 0,
+    category:    r.category,
+    status:      r.status,
+    submittedAt: r.submitted_at,
+    notes:       r.notes,
+    imageIpfsUrl: r.image_ipfs_url ? (Array.isArray(r.image_ipfs_url) ? r.image_ipfs_url : [r.image_ipfs_url]) : [],
+    reviewNote:  r.review_note,
+    rewardAmount: Number(r.reward_amount) || null,
+    rewardTxHash: r.reward_tx_hash || null
+  }));
+}

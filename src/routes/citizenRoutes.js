@@ -13,4 +13,7 @@ router.get('/leaderboard', authenticate, citizenController.getLeaderboard);
 // GET /api/citizen/feed — public endpoint, optional auth
 router.get('/feed', citizenController.getFeed);
 
+// GET /api/citizen/activities — requires citizen or admin auth
+router.get('/activities', authenticate, authorizeRoles('citizen'), citizenController.getActivities);
+
 export default router;
