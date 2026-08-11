@@ -46,7 +46,7 @@ export async function findUserByUsername(username) {
   const result = await query(
     `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, created_at
      FROM users
-     WHERE LOWER(username) = $1
+     WHERE LOWER(email) = $1
      LIMIT 1`,
     [normalizedUsername]
   );
