@@ -30,8 +30,13 @@ async function getUserLists(req, res) {
       .map(({ id, firstName, lastName, username, email, active, organizationId, createdAt }) => ({
         id, firstName, lastName, username, email, active, organizationId, createdAt
       }));
+    const citizens = allUsers
+      .filter((u) => u.role === 'citizen')
+      .map(({ id, firstName, lastName, username, email, active, organizationId, createdAt }) => ({
+        id, firstName, lastName, username, email, active, organizationId, createdAt
+      }));
 
-    res.json({ ok: true, verifiers, contributors });
+    res.json({ ok: true, verifiers, contributors, citizens });
   } catch (error) {
     console.error('Dashboard user lists error:', error);
     res.status(500).json({ ok: false, error: 'Failed to fetch user lists' });
