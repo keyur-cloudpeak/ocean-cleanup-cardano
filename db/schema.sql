@@ -17,6 +17,21 @@ BEGIN
 END
 $$;
 
+CREATE TABLE IF NOT EXISTS organizations (
+    org_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            TEXT NOT NULL,
+    region          TEXT,
+    country         TEXT,
+    parent_org_id   UUID REFERENCES organizations(org_id),
+    contact_email   TEXT,
+    joined_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    is_active       BOOLEAN NOT NULL DEFAULT true
+);
+
+CREATE INDEX IF NOT EXISTS idx_organizations_is_active  ON organizations (is_active);
+CREATE INDEX IF NOT EXISTS idx_organizations_parent_org ON organizations (parent_org_id);
+CREATE INDEX IF NOT EXISTS idx_organizations_joined_at  ON organizations (joined_at DESC);
+
 CREATE TABLE IF NOT EXISTS users (
     id              TEXT PRIMARY KEY,
     first_name      TEXT NOT NULL,
@@ -133,20 +148,6 @@ CREATE TABLE IF NOT EXISTS user_login (
 CREATE INDEX IF NOT EXISTS idx_user_login_user_id ON user_login (user_id);
 CREATE INDEX IF NOT EXISTS idx_user_login_login_at ON user_login (login_at DESC);
 
-CREATE TABLE IF NOT EXISTS organizations (
-    org_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name            TEXT NOT NULL,
-    region          TEXT,
-    country         TEXT,
-    parent_org_id   UUID REFERENCES organizations(org_id),
-    contact_email   TEXT,
-    joined_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    is_active       BOOLEAN NOT NULL DEFAULT true
-);
-
-CREATE INDEX IF NOT EXISTS idx_organizations_is_active  ON organizations (is_active);
-CREATE INDEX IF NOT EXISTS idx_organizations_parent_org ON organizations (parent_org_id);
-CREATE INDEX IF NOT EXISTS idx_organizations_joined_at  ON organizations (joined_at DESC);
 
 COMMIT;
 
