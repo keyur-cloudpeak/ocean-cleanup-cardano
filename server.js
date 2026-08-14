@@ -3,9 +3,9 @@ import app from './src/app.js';
 import { env } from './src/config/env.js';
 import { validateWalletSetup } from './src/config/wallet.js';
 
-const HOST = process.env.HOST || '0.0.0.0';
+const SERVER_HOST = process.env.SERVER_HOST || '0.0.0.0';
 
-export function findAvailablePort(startPort, host = HOST) {
+export function findAvailablePort(startPort, host = SERVER_HOST) {
   return new Promise((resolve, reject) => {
     const probe = net.createServer();
 
@@ -37,13 +37,13 @@ const startServer = async () => {
   }
 
   const requestedPort = Number(env.port);
-  const port = await findAvailablePort(requestedPort, HOST);
+  const port = await findAvailablePort(requestedPort, SERVER_HOST);
 
-  const server = app.listen(port, HOST, () => {
+  const server = app.listen(port, SERVER_HOST, () => {
     if (port !== requestedPort) {
       console.warn(`Warning: Port ${requestedPort} was in use. Using next available port.`);
     }
-    console.log(`listening on http://${HOST}:${port}`);
+    console.log(`listening on http://${SERVER_HOST}:${port}`);
   });
 
   server.on('error', (error) => {

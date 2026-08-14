@@ -65,6 +65,11 @@ export function buildRewardMetadata({ activity, label }) {
   return metadata;
 }
 
+/** Ensures a hex string has even length (pads with a leading zero if needed). */
+function padHex(hex) {
+  return typeof hex === 'string' && hex.length % 2 !== 0 ? '0' + hex : hex;
+}
+
 let lucidPromise = null;
 let mintingPolicyPromise = null;
 
@@ -94,8 +99,8 @@ async function getMintingPolicy() {
         throw new Error('Could not resolve a payment credential for the minter wallet');
       }
 
-      const script = applyParamsToScript(blockchainConfig.rewardPolicyCompiledCode, [
-        paymentCredential.hash
+      const script = applyParamsToScript(padHex(blockchainConfig.rewardPolicyCompiledCode), [
+        padHex(paymentCredential.hash)
       ]);
 
       return {
