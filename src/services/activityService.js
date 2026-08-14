@@ -64,6 +64,32 @@ function mapActivityRow(row) {
     status: row.status,
     reviewNote: row.review_note,
     reviewedAt: row.reviewed_at,
+    shorelineType: row.shoreline_type,
+    tideState: row.tide_state,
+    cleanedBefore: row.cleaned_before,
+    debrisLog: {
+      'Cigarette butts': row.debris_cigarette_butts,
+      'Food wrappers': row.debris_food_wrappers,
+      'Bottle caps': row.debris_bottle_caps,
+      'Fishing line and nets': row.debris_fishing_line,
+      'Straws and bags': row.debris_straws,
+      'Bottles and containers': row.debris_bottles
+    },
+    microplastics: row.microplastics,
+    bulkItems: row.bulk_items,
+    speciesSighted: row.species_sighted,
+    condition: row.condition,
+    habitatStress: row.habitat_stress,
+    hazards: {
+      medical: row.hazards_medical,
+      chemical: row.hazards_chemical,
+      unstable: row.hazards_unstable
+    },
+    instrument: row.instrument,
+    timeSpent: row.time_spent,
+    secondVerifier: row.second_verifier,
+    disposalMethod: row.disposal_method,
+    followUp: row.follow_up,
     reward: mapReward(row)
   };
 }
@@ -80,7 +106,11 @@ function getActivitySelectColumns() {
   return `id, category, location, quantity, volunteers, evidence_hash, contributor_id, organization_id,
           image_cid, image_ipfs_url, image_gateway_url, lat, lon, gps, notes,
           submitted_at, status, review_note, reviewed_at,
-          reward_id, reward_tx_hash, reward_amount, reward_token_type, reward_minted_at`;
+          reward_id, reward_tx_hash, reward_amount, reward_token_type, reward_minted_at,
+          shoreline_type, tide_state, cleaned_before, debris_cigarette_butts, debris_food_wrappers, debris_bottle_caps,
+          debris_fishing_line, debris_straws, debris_bottles, microplastics, bulk_items, species_sighted, condition,
+          habitat_stress, hazards_medical, hazards_chemical, hazards_unstable, instrument, time_spent, second_verifier,
+          disposal_method, follow_up`;
 }
 
 export async function listActivities(statusFilter = null) {
@@ -136,10 +166,15 @@ export async function createActivity(payload) {
   const result = await query(
     `INSERT INTO activities (
       id, category, location, quantity, volunteers, evidence_hash, contributor_id, organization_id,
-      image_cid, image_ipfs_url, image_gateway_url, lat, lon, gps, notes, submitted_at, status
+      image_cid, image_ipfs_url, image_gateway_url, lat, lon, gps, notes, submitted_at, status,
+      shoreline_type, tide_state, cleaned_before, debris_cigarette_butts, debris_food_wrappers, debris_bottle_caps,
+      debris_fishing_line, debris_straws, debris_bottles, microplastics, bulk_items, species_sighted, condition,
+      habitat_stress, hazards_medical, hazards_chemical, hazards_unstable, instrument, time_spent, second_verifier,
+      disposal_method, follow_up
      ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8,
-      $9, $10, $11, $12, $13, $14, $15, $16, 'pending'
+      $9, $10, $11, $12, $13, $14, $15, $16, 'pending',
+      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38
      )
      RETURNING ${getActivitySelectColumns()}`,
     [
@@ -158,7 +193,13 @@ export async function createActivity(payload) {
       normalizeNumber(payload.lon),
       payload.gps || null,
       payload.notes || '',
-      submittedAt
+      submittedAt,
+      payload.shorelineType, payload.tideState, Boolean(payload.cleanedBefore),
+      normalizeNumber(payload.debrisCigaretteButts), normalizeNumber(payload.debrisFoodWrappers), normalizeNumber(payload.debrisBottleCaps),
+      normalizeNumber(payload.debrisFishingLine), normalizeNumber(payload.debrisStraws), normalizeNumber(payload.debrisBottles),
+      payload.microplastics, payload.bulkItems, payload.speciesSighted, payload.condition, payload.habitatStress,
+      Boolean(payload.hazardsMedical), Boolean(payload.hazardsChemical), Boolean(payload.hazardsUnstable),
+      payload.instrument, normalizeNumber(payload.timeSpent), payload.secondVerifier, payload.disposalMethod, Boolean(payload.followUp)
     ]
   );
 
@@ -190,6 +231,29 @@ export async function updateActivity(id, payload) {
   addField('lon', payload.lon != null ? normalizeNumber(payload.lon) : undefined);
   addField('gps', payload.gps);
   addField('notes', payload.notes);
+  
+  addField('shoreline_type', payload.shorelineType);
+  addField('tide_state', payload.tideState);
+  addField('cleaned_before', payload.cleanedBefore !== undefined ? Boolean(payload.cleanedBefore) : undefined);
+  addField('debris_cigarette_butts', payload.debrisCigaretteButts !== undefined ? normalizeNumber(payload.debrisCigaretteButts) : undefined);
+  addField('debris_food_wrappers', payload.debrisFoodWrappers !== undefined ? normalizeNumber(payload.debrisFoodWrappers) : undefined);
+  addField('debris_bottle_caps', payload.debrisBottleCaps !== undefined ? normalizeNumber(payload.debrisBottleCaps) : undefined);
+  addField('debris_fishing_line', payload.debrisFishingLine !== undefined ? normalizeNumber(payload.debrisFishingLine) : undefined);
+  addField('debris_straws', payload.debrisStraws !== undefined ? normalizeNumber(payload.debrisStraws) : undefined);
+  addField('debris_bottles', payload.debrisBottles !== undefined ? normalizeNumber(payload.debrisBottles) : undefined);
+  addField('microplastics', payload.microplastics);
+  addField('bulk_items', payload.bulkItems);
+  addField('species_sighted', payload.speciesSighted);
+  addField('condition', payload.condition);
+  addField('habitat_stress', payload.habitatStress);
+  addField('hazards_medical', payload.hazardsMedical !== undefined ? Boolean(payload.hazardsMedical) : undefined);
+  addField('hazards_chemical', payload.hazardsChemical !== undefined ? Boolean(payload.hazardsChemical) : undefined);
+  addField('hazards_unstable', payload.hazardsUnstable !== undefined ? Boolean(payload.hazardsUnstable) : undefined);
+  addField('instrument', payload.instrument);
+  addField('time_spent', payload.timeSpent !== undefined ? normalizeNumber(payload.timeSpent) : undefined);
+  addField('second_verifier', payload.secondVerifier);
+  addField('disposal_method', payload.disposalMethod);
+  addField('follow_up', payload.followUp !== undefined ? Boolean(payload.followUp) : undefined);
 
   if (updates.length === 0) {
     return getActivityById(id);

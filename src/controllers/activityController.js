@@ -78,7 +78,12 @@ async function create(req, res) {
       lon,
       gps,
       volunteers,
-      notes
+      notes,
+      shorelineType, tideState, cleanedBefore,
+      debrisCigaretteButts, debrisFoodWrappers, debrisBottleCaps, debrisFishingLine, debrisStraws, debrisBottles,
+      microplastics, bulkItems, speciesSighted, condition, habitatStress,
+      hazardsMedical, hazardsChemical, hazardsUnstable,
+      instrument, timeSpent, secondVerifier, disposalMethod, followUp
     } = req.body;
 
     if (!category || !location || !quantity) {
@@ -128,6 +133,11 @@ async function create(req, res) {
       gps,
       volunteers,
       notes,
+      shorelineType, tideState, cleanedBefore,
+      debrisCigaretteButts, debrisFoodWrappers, debrisBottleCaps, debrisFishingLine, debrisStraws, debrisBottles,
+      microplastics, bulkItems, speciesSighted, condition, habitatStress,
+      hazardsMedical, hazardsChemical, hazardsUnstable,
+      instrument, timeSpent, secondVerifier, disposalMethod, followUp,
       timestamp: req.body.timestamp || new Date().toISOString()
     });
 
@@ -184,7 +194,12 @@ async function update(req, res) {
       lat,
       lon,
       gps,
-      notes
+      notes,
+      shorelineType, tideState, cleanedBefore,
+      debrisCigaretteButts, debrisFoodWrappers, debrisBottleCaps, debrisFishingLine, debrisStraws, debrisBottles,
+      microplastics, bulkItems, speciesSighted, condition, habitatStress,
+      hazardsMedical, hazardsChemical, hazardsUnstable,
+      instrument, timeSpent, secondVerifier, disposalMethod, followUp
     } = req.body;
 
     const updates = {
@@ -197,7 +212,12 @@ async function update(req, res) {
       lat,
       lon,
       gps,
-      notes
+      notes,
+      shorelineType, tideState, cleanedBefore,
+      debrisCigaretteButts, debrisFoodWrappers, debrisBottleCaps, debrisFishingLine, debrisStraws, debrisBottles,
+      microplastics, bulkItems, speciesSighted, condition, habitatStress,
+      hazardsMedical, hazardsChemical, hazardsUnstable,
+      instrument, timeSpent, secondVerifier, disposalMethod, followUp
     };
 
     if (req.files && req.files.length > 0) {
