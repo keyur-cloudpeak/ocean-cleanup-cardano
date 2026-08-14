@@ -15,7 +15,7 @@ export const walletConfig = {
   minter: {
     seedPhrase: process.env.MINTER_SEED_PHRASE || null,
     rewardAssetName: process.env.REWARD_ASSET_NAME || 'OCEAN',
-    policyCompiledCode: process.env.REWARD_POLICY_COMPILED_CODE || null
+    policyCompiledCode: (process.env.REWARD_POLICY_COMPILED_CODE || '').replace(/\s+/g, '') || null
   },
 
   // Wallet validation settings

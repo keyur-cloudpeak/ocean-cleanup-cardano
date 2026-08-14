@@ -65,9 +65,11 @@ export function buildRewardMetadata({ activity, label }) {
   return metadata;
 }
 
-/** Ensures a hex string has even length (pads with a leading zero if needed). */
+/** Strips whitespace and ensures a hex string has even length (pads with a leading zero if needed). */
 function padHex(hex) {
-  return typeof hex === 'string' && hex.length % 2 !== 0 ? '0' + hex : hex;
+  if (typeof hex !== 'string') return hex;
+  const clean = hex.replace(/\s+/g, '');
+  return clean.length % 2 !== 0 ? '0' + clean : clean;
 }
 
 let lucidPromise = null;
