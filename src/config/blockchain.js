@@ -1,5 +1,5 @@
 import './loadEnv.js';
-import { walletConfig, assertMinterWalletConfigured } from './wallet.js';
+import { walletConfig, assertProofWalletConfigured } from './wallet.js';
 
 const BLOCKFROST_URLS = {
   Mainnet: 'https://cardano-mainnet.blockfrost.io/api/v0',
@@ -23,22 +23,13 @@ export const blockchainConfig = {
   blockfrostApiKey: process.env.BLOCKFROST_API_KEY || null,
   blockfrostUrl: process.env.BLOCKFROST_URL || BLOCKFROST_URLS[network],
 
-  // BIP-39 seed phrase for the wallet that pays fees and is authorized to
-  // mint reward tokens (its verification key hash is baked into the
-  // parameterized minting policy). Keep this out of source control.
-  minterSeedPhrase: walletConfig.minter.seedPhrase,
-
-  // Compiled (unparameterized) validator CBOR hex, copied from
-  // cardano/plutus.json after `aiken build`. See cardano/README.md.
-  rewardPolicyCompiledCode: walletConfig.minter.policyCompiledCode,
-
-  // Default asset name minted for activity rewards. Cardano asset names are
-  // raw bytes (hex on-chain); the backend converts this text for you.
-  rewardAssetName: walletConfig.minter.rewardAssetName
+  // BIP-39 seed phrase for the backend wallet that pays transaction fees and
+  // signs the self-payment which records activity metadata.
+  proofSeedPhrase: walletConfig.backend.seedPhrase
 };
 
-export function assertMintingConfigured() {
-  assertMinterWalletConfigured();
+export function assertProofConfigured() {
+  assertProofWalletConfigured();
 }
 
 export default blockchainConfig;

@@ -1,6 +1,7 @@
 import app from './src/app.js';
 import { env } from './src/config/env.js';
 import { validateWalletSetup } from './src/config/wallet.js';
+import indexerService from './src/services/indexerService.js';
 
 const SERVER_HOST = process.env.SERVER_HOST || '0.0.0.0';
 
@@ -21,6 +22,27 @@ const startServer = async () => {
       SERVER_HOST === '0.0.0.0' ? 'localhost' : SERVER_HOST;
 
     console.log(`🚀 Server running at http://${displayHost}:${port}`);
+
+    // Background sweep: confirm pending proof transactions and retry any
+    // approved activities that somehow never got a proof submitted.
+    // Runs every five minutes. Skips silently if wallet/Blockfrost isn't
+    // configured (e.g. dev without a seed phrase).
+    const syncProofs = async () => {
+      try {
+        const summary = await indexerService.sync();
+        if (summary.checkedConfirmations > 0 || summary.retriedMissing > 0) {
+          console.log(
+            `[onchainProof] sweep: confirmed=${summary.checkedConfirmations} retried=${summary.retriedMissing}`
+          );
+        }
+      } catch (err) {
+        console.warn('[onchainProof] monitor sweep error:', err.message);
+      }
+    };
+
+    // Reconcile immediately after startup, then on the regular interval.
+    syncProofs();
+    setInterval(syncProofs, 5 * 60_000);
   });
 
   server.on('error', (error) => {

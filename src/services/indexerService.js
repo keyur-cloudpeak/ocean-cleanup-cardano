@@ -1,6 +1,9 @@
+import { monitorPendingProofs } from './onchainProofService.js';
+
 export class IndexerService {
-  sync() {
-    return { status: 'ready' };
+  async sync() {
+    const summary = await monitorPendingProofs();
+    return { status: 'ok', ...summary };
   }
 }
 

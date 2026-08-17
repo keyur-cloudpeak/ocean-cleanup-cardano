@@ -5,12 +5,12 @@ import {
   getActivityById,
   updateActivity,
   reviewActivity,
-  mintReward,
   deleteActivity
 } from '../services/activityService.js';
 import { send as sendActivityNotification } from '../services/notificationService.js';
-import { findUserById } from '../services/userService.js';
-import contractService from '../contracts/contractService.js';
+import { recordActivityOnChain, getActivityProof } from '../services/onchainProofService.js';
+import { recordActivityEvent } from '../services/activityEventService.js';
+import { awardApprovalPoints } from '../services/rewardLedgerService.js';
 
 // Helper: convert a base64 data URI → { buffer, mimeType, filename }
 function parseBase64Image(dataUri) {
@@ -70,7 +70,6 @@ async function create(req, res) {
       location,
       quantity,
       evidenceHash,
-      contributorId,
       organizationId,
       imageUrls,   // JSON-encoded array of base64 strings (fallback)
       imageUrl,    // legacy single base64 (fallback)
@@ -123,7 +122,7 @@ async function create(req, res) {
       location,
       quantity,
       evidenceHash,
-      contributorId,
+      contributorId: req.user.id,
       organizationId,
       imageCids,
       imageIpfsUrls,
@@ -139,6 +138,13 @@ async function create(req, res) {
       hazardsMedical, hazardsChemical, hazardsUnstable,
       instrument, timeSpent, secondVerifier, disposalMethod, followUp,
       timestamp: req.body.timestamp || new Date().toISOString()
+    });
+
+    await recordActivityEvent({
+      activityId: activity.id,
+      eventType: 'submitted',
+      actorId: req.user.id,
+      payload: { contributorId: activity.contributorId, organizationId: activity.organizationId }
     });
 
     try {
@@ -255,97 +261,50 @@ async function update(req, res) {
 
 async function review(req, res) {
   try {
-    const activity = await reviewActivity(req.params.id, req.body.status, req.body.reviewNote || '');
+    const existing = await getActivityById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ ok: false, error: 'Activity not found' });
+    }
+    if (existing.status === 'approved') {
+      return res.status(409).json({ ok: false, error: 'Approved activities cannot be reviewed again' });
+    }
+
+    const activity = await reviewActivity(
+      req.params.id,
+      req.body.status,
+      req.body.reviewNote || '',
+      req.user.id
+    );
     if (!activity) {
       return res.status(404).json({ ok: false, error: 'Activity not found' });
     }
 
-    // If approved, automatically mint the reward
-    let mintResult = null;
+    await recordActivityEvent({
+      activityId: activity.id,
+      eventType: `reviewed_${activity.status}`,
+      actorId: req.user.id,
+      payload: { reviewNote: activity.reviewNote }
+    });
+
+    // A proof is recorded by the backend wallet only; the contributor never
+    // needs to supply or own a Cardano wallet.
     if (activity.status === 'approved') {
-      try {
-        if (!activity.contributorId) {
-          return res.status(400).json({ ok: false, error: 'Activity has no contributor to reward' });
-        }
-
-        const contributor = await findUserById(activity.contributorId);
-        if (!contributor?.walletAddress) {
-          return res.status(400).json({
-            ok: false,
-            error: 'Contributor has not linked a Cardano wallet address yet (POST /api/auth/wallet)'
-          });
-        }
-
-        const amount = req.body.amount || 10;
-        const tokenType = req.body.tokenType || 'OCEAN';
-
-        mintResult = await contractService.mintReward({
-          recipientAddress: contributor.walletAddress,
-          amount,
-          assetName: tokenType,
-          activity
+      if (activity.contributorId) {
+        await awardApprovalPoints({
+          activityId: activity.id,
+          userId: activity.contributorId,
+          reviewerId: req.user.id
         });
-
-        const updatedActivity = await mintReward(req.params.id, amount, tokenType, mintResult.txHash);
-        return res.json({ ok: true, activity: updatedActivity, mint: mintResult });
-      } catch (mintError) {
-        console.error('Auto-mint error during approval:', mintError);
-        return res.status(500).json({ ok: false, error: mintError.message || 'Failed to mint reward automatically' });
       }
+
+      recordActivityOnChain(req.params.id).catch((proofErr) =>
+        console.error('[onchainProof] background submission failed for activity', req.params.id, ':', proofErr.message)
+      );
     }
 
     res.json({ ok: true, activity });
   } catch (error) {
     res.status(500).json({ ok: false, error: 'Failed to review activity' });
-  }
-}
-
-async function mint(req, res) {
-  try {
-    const existing = await getActivityById(req.params.id);
-    if (!existing) {
-      return res.status(404).json({ ok: false, error: 'Activity not found' });
-    }
-
-    if (existing.status !== 'approved') {
-      return res.status(400).json({ ok: false, error: 'Only approved activities can be minted' });
-    }
-
-    if (existing.reward?.txHash) {
-      return res.status(400).json({ ok: false, error: 'A reward has already been minted for this activity' });
-    }
-
-    if (!existing.contributorId) {
-      return res.status(400).json({ ok: false, error: 'Activity has no contributor to reward' });
-    }
-
-    const contributor = await findUserById(existing.contributorId);
-    if (!contributor?.walletAddress) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Contributor has not linked a Cardano wallet address yet (POST /api/auth/wallet)'
-      });
-    }
-
-    const amount = req.body.amount || 10;
-    const tokenType = req.body.tokenType || 'OCEAN';
-
-    const mintResult = await contractService.mintReward({
-      recipientAddress: contributor.walletAddress,
-      amount,
-      assetName: tokenType,
-      activity: existing
-    });
-
-    const activity = await mintReward(req.params.id, amount, tokenType, mintResult.txHash);
-    if (!activity) {
-      return res.status(404).json({ ok: false, error: 'Activity not found' });
-    }
-
-    res.json({ ok: true, activity, mint: mintResult });
-  } catch (error) {
-    console.error('Mint reward error:', error);
-    res.status(500).json({ ok: false, error: error.message || 'Failed to mint reward' });
   }
 }
 
@@ -363,4 +322,17 @@ async function remove(req, res) {
   }
 }
 
-export default { list, create, getById, update, review, mint, remove };
+async function proof(req, res) {
+  try {
+    const proofData = await getActivityProof(req.params.id);
+    res.json({ ok: true, proof: proofData });
+  } catch (error) {
+    if (error.message?.includes('not found')) {
+      return res.status(404).json({ ok: false, error: error.message });
+    }
+    console.error('Get proof error:', error);
+    res.status(500).json({ ok: false, error: 'Failed to retrieve on-chain proof' });
+  }
+}
+
+export default { list, create, getById, update, review, remove, proof };

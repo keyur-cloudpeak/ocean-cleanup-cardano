@@ -239,7 +239,8 @@ export async function getCitizenFeed(limit = 5) {
  */
 export async function getCitizenActivities(citizenId) {
   const result = await query(
-    `SELECT *
+    `SELECT a.*,
+       COALESCE((SELECT SUM(amount) FROM reward_ledger rl WHERE rl.activity_id = a.id), 0)::int AS points_awarded
      FROM activities a
      WHERE a.contributor_id = $1
      ORDER BY a.submitted_at DESC`,
@@ -257,7 +258,6 @@ export async function getCitizenActivities(citizenId) {
     notes: r.notes,
     imageIpfsUrl: r.image_ipfs_url ? (Array.isArray(r.image_ipfs_url) ? r.image_ipfs_url : [r.image_ipfs_url]) : [],
     reviewNote: r.review_note,
-    rewardAmount: Number(r.reward_amount) || null,
-    rewardTxHash: r.reward_tx_hash || null
+    pointsAwarded: Number(r.points_awarded) || 0
   }));
 }

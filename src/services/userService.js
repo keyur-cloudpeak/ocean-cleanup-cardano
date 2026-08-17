@@ -23,7 +23,6 @@ function mapUserRow(row) {
     organizationId: row.organization_id || null,
     jobTitle: row.job_title || null,
     yearsExperience: row.years_experience || null,
-    walletAddress: row.wallet_address || null,
     profileImageUrl: row.profile_image_url || null,
     createdAt: row.created_at
   };
@@ -31,7 +30,7 @@ function mapUserRow(row) {
 
 export async function getUsers() {
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, profile_image_url, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
      ORDER BY created_at DESC`
   );
@@ -45,7 +44,7 @@ export async function saveUsers() {
 export async function findUserByUsername(username) {
   const normalizedUsername = normalizeUsername(username);
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, profile_image_url, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
      WHERE LOWER(email) = $1
      LIMIT 1`,
@@ -58,7 +57,7 @@ export async function findUserByUsername(username) {
 export async function findUserByEmail(email) {
   const normalizedEmail = normalizeEmail(email);
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, profile_image_url, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
      WHERE LOWER(email) = $1
      LIMIT 1`,
@@ -74,9 +73,9 @@ export async function createUser(userData) {
   const email = normalizeEmail(userData.email);
 
   const result = await query(
-    `INSERT INTO users (id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, profile_image_url)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, profile_image_url, created_at`,
+    `INSERT INTO users (id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at`,
     [
       id,
       userData.firstName,
@@ -89,7 +88,6 @@ export async function createUser(userData) {
       userData.organizationId || null,
       userData.jobTitle || null,
       userData.yearsExperience || null,
-      userData.walletAddress || null,
       userData.profileImageUrl || null
     ]
   );
@@ -128,23 +126,11 @@ export async function deleteUserLoginRecords(userId) {
 
 export async function findUserById(id) {
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
      WHERE id = $1
      LIMIT 1`,
     [id]
-  );
-
-  return mapUserRow(result.rows[0]);
-}
-
-export async function setUserWalletAddress(id, walletAddress) {
-  const result = await query(
-    `UPDATE users
-     SET wallet_address = $2
-     WHERE id = $1
-     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, profile_image_url, created_at`,
-    [id, walletAddress || null]
   );
 
   return mapUserRow(result.rows[0]);
@@ -155,7 +141,7 @@ export async function setUserActiveStatus(id, isActive) {
     `UPDATE users
      SET is_active = $2
      WHERE id = $1
-     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, profile_image_url, created_at`,
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at`,
     [id, Boolean(isActive)]
   );
 
@@ -171,7 +157,7 @@ export async function updateUserProfile(id, profileData) {
          years_experience = COALESCE($5, years_experience),
          profile_image_url = COALESCE($6, profile_image_url)
      WHERE id = $1
-     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, wallet_address, profile_image_url, created_at`,
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at`,
     [
       id,
       profileData.firstName || null,

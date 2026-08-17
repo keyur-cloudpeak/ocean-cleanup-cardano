@@ -1,8 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
-import { isValidCardanoAddress, detectAddressNetwork } from '../config/wallet.js';
-import { findUserByUsername, findUserByEmail, createUser, findUserById, recordUserLogin, deleteUserLoginRecords, setUserWalletAddress, updateUserProfile } from '../services/userService.js';
+import { findUserByUsername, findUserByEmail, createUser, findUserById, recordUserLogin, deleteUserLoginRecords, updateUserProfile } from '../services/userService.js';
 
 function normalizeUsername(value) {
   return String(value || '').trim().toLowerCase();
@@ -23,7 +22,6 @@ async function signup(req, res) {
     const organizationId = req.body.organizationId || null;
     const jobTitle = String(req.body.jobTitle || '').trim() || null;
     const yearsExperience = String(req.body.yearsExperience || '').trim() || null;
-    const walletAddress = String(req.body.walletAddress || '').trim() || null;
 
     if (!firstName || !lastName || !email || !username || !password || !role) {
       return res.status(400).json({ ok: false, message: 'All fields are required' });
@@ -48,10 +46,10 @@ async function signup(req, res) {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await createUser({ firstName, lastName, email, username, password: hashedPassword, role, organizationId, jobTitle, yearsExperience, walletAddress });
+    const user = await createUser({ firstName, lastName, email, username, password: hashedPassword, role, organizationId, jobTitle, yearsExperience });
 
     const token = jwt.sign({ id: user.id, role: user.role }, env.jwtSecret, { expiresIn: '24h' });
-    res.json({ ok: true, token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, jobTitle: user.jobTitle, yearsExperience: user.yearsExperience, walletAddress: user.walletAddress, profileImageUrl: user.profileImageUrl } });
+    res.json({ ok: true, token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, jobTitle: user.jobTitle, yearsExperience: user.yearsExperience, profileImageUrl: user.profileImageUrl } });
   } catch (error) {
     console.error('Signup error:', error);
     res.status(500).json({ ok: false, message: 'Internal server error' });
@@ -96,7 +94,7 @@ async function login(req, res) {
       console.error('Failed to record user login:', loginError);
     }
 
-    res.json({ ok: true, token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, jobTitle: user.jobTitle, yearsExperience: user.yearsExperience, walletAddress: user.walletAddress, profileImageUrl: user.profileImageUrl } });
+    res.json({ ok: true, token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, jobTitle: user.jobTitle, yearsExperience: user.yearsExperience, profileImageUrl: user.profileImageUrl } });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ ok: false, message: 'Internal server error' });
@@ -118,55 +116,9 @@ async function verify(req, res) {
       return res.status(401).json({ ok: false, message: 'User not found' });
     }
 
-    res.json({ ok: true, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, jobTitle: user.jobTitle, yearsExperience: user.yearsExperience, walletAddress: user.walletAddress, profileImageUrl: user.profileImageUrl } });
+    res.json({ ok: true, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, username: user.username, role: user.role, organizationId: user.organizationId, jobTitle: user.jobTitle, yearsExperience: user.yearsExperience, profileImageUrl: user.profileImageUrl } });
   } catch (error) {
     console.error('Verify error:', error);
-    res.status(401).json({ ok: false, message: 'Invalid token' });
-  }
-}
-
-async function updateWallet(req, res) {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ ok: false, message: 'No token provided' });
-    }
-
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, env.jwtSecret);
-
-    const walletAddress = String(req.body.walletAddress || '').trim();
-    if (!walletAddress || !isValidCardanoAddress(walletAddress)) {
-      return res.status(400).json({ 
-        ok: false, 
-        message: 'A valid Cardano address is required (addr1 for mainnet or addr_test1 for testnet)' 
-      });
-    }
-
-    // Detect network to provide helpful feedback
-    const network = detectAddressNetwork(walletAddress);
-
-    const user = await setUserWalletAddress(decoded.id, walletAddress);
-    if (!user) {
-      return res.status(404).json({ ok: false, message: 'User not found' });
-    }
-
-    res.json({ 
-      ok: true, 
-      user: { 
-        id: user.id, 
-        firstName: user.firstName, 
-        lastName: user.lastName, 
-        email: user.email, 
-        username: user.username, 
-        role: user.role, 
-        organizationId: user.organizationId, 
-        walletAddress: user.walletAddress 
-      },
-      network
-    });
-  } catch (error) {
-    console.error('Update wallet error:', error);
     res.status(401).json({ ok: false, message: 'Invalid token' });
   }
 }
@@ -225,7 +177,6 @@ async function updateProfile(req, res) {
         organizationId: user.organizationId, 
         jobTitle: user.jobTitle,
         yearsExperience: user.yearsExperience,
-        walletAddress: user.walletAddress,
         profileImageUrl: user.profileImageUrl
       }
     });
@@ -235,4 +186,4 @@ async function updateProfile(req, res) {
   }
 }
 
-export default { signup, login, verify, logout, updateWallet, updateProfile };
+export default { signup, login, verify, logout, updateProfile };

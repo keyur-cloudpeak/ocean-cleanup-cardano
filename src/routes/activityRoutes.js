@@ -8,10 +8,10 @@ const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 router.get('/', activityController.list);
-router.post('/', upload.array('images', 10), activityController.create);
+router.post('/', authenticate, authorizeRoles('contributor'), upload.array('images', 10), activityController.create);
 router.get('/:id', activityController.getById);
+router.get('/:id/proof', activityController.proof);
 router.post('/:id/review', authenticate, authorizeRoles('admin', 'verifier'), activityController.review);
-router.post('/:id/mint', authenticate, authorizeRoles('admin', 'verifier'), activityController.mint);
 router.patch('/:id', authenticate, upload.array('images', 10), activityController.update);
 router.delete('/:id', authenticate, activityController.remove);
 

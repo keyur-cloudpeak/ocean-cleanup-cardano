@@ -64,6 +64,7 @@ function mapActivityRow(row) {
     status: row.status,
     reviewNote: row.review_note,
     reviewedAt: row.reviewed_at,
+    reviewedBy: row.reviewed_by,
     shorelineType: row.shoreline_type,
     tideState: row.tide_state,
     cleanedBefore: row.cleaned_before,
@@ -98,14 +99,10 @@ function makeActivityId() {
   return `${Date.now()}${Math.floor(Math.random() * 1000)}`;
 }
 
-function makeRewardId(activityId) {
-  return `reward-${activityId}`;
-}
-
 function getActivitySelectColumns() {
   return `id, category, location, quantity, volunteers, evidence_hash, contributor_id, organization_id,
           image_cid, image_ipfs_url, image_gateway_url, lat, lon, gps, notes,
-          submitted_at, status, review_note, reviewed_at,
+          submitted_at, status, review_note, reviewed_at, reviewed_by,
           reward_id, reward_tx_hash, reward_amount, reward_token_type, reward_minted_at,
           shoreline_type, tide_state, cleaned_before, debris_cigarette_butts, debris_food_wrappers, debris_bottle_caps,
           debris_fishing_line, debris_straws, debris_bottles, microplastics, bulk_items, species_sighted, condition,
@@ -270,42 +267,17 @@ export async function updateActivity(id, payload) {
   return mapActivityRow(result.rows[0]);
 }
 
-export async function reviewActivity(id, status, reviewNote = '') {
+export async function reviewActivity(id, status, reviewNote = '', reviewerId = null) {
   const normalizedStatus = ALLOWED_STATUSES.has(normalizeStatus(status)) ? normalizeStatus(status) : 'approved';
   const result = await query(
     `UPDATE activities
      SET status = $2,
          review_note = $3,
-         reviewed_at = NOW()
+         reviewed_at = NOW(),
+         reviewed_by = $4
      WHERE id = $1
      RETURNING ${getActivitySelectColumns()}`,
-    [id, normalizedStatus, reviewNote || '']
-  );
-
-  return mapActivityRow(result.rows[0]);
-}
-
-export async function mintReward(id, amount = 10, tokenType = 'OCEAN', txHash) {
-  if (!txHash) {
-    throw new Error('mintReward requires a txHash from a completed on-chain mint');
-  }
-
-  const result = await query(
-    `UPDATE activities
-     SET reward_id = COALESCE(reward_id, $2),
-         reward_tx_hash = $3,
-         reward_amount = $4,
-         reward_token_type = $5,
-         reward_minted_at = NOW()
-     WHERE id = $1
-     RETURNING ${getActivitySelectColumns()}`,
-    [
-      id,
-      makeRewardId(id),
-      txHash,
-      normalizeNumber(amount) ?? 10,
-      tokenType || 'OCEAN'
-    ]
+    [id, normalizedStatus, reviewNote || '', reviewerId]
   );
 
   return mapActivityRow(result.rows[0]);
@@ -332,7 +304,7 @@ export async function getContributorStats(contributorId) {
        COUNT(*) FILTER (WHERE status = 'rejected')::int                         AS rejected_activities,
        COALESCE(SUM(quantity) FILTER (WHERE status = 'approved'), 0)            AS total_kg,
        COALESCE(SUM(volunteers) FILTER (WHERE status = 'approved'), 0)::int     AS total_volunteers,
-       COALESCE(SUM(reward_amount) FILTER (WHERE status = 'approved'), 0)       AS total_tokens,
+       COALESCE((SELECT SUM(amount) FROM reward_ledger WHERE user_id = $1), 0)  AS total_points,
        -- This month
        COUNT(*) FILTER (WHERE submitted_at >= date_trunc('month', NOW()))::int              AS month_activities,
        COALESCE(SUM(quantity) FILTER (WHERE status = 'approved'
@@ -384,7 +356,8 @@ export async function getContributorStats(contributorId) {
     rejectedActivities:Number(row.rejected_activities)|| 0,
     totalKg:           Number(row.total_kg)           || 0,
     totalVolunteers:   Number(row.total_volunteers)   || 0,
-    totalTokens:       Number(row.total_tokens)       || 0,
+    totalPoints:       Number(row.total_points)       || 0,
+    totalTokens:       Number(row.total_points)       || 0,
     monthActivities:   Number(row.month_activities)   || 0,
     monthKg:           Number(row.month_kg)           || 0,
     monthVolunteers:   Number(row.month_volunteers)   || 0,
@@ -413,7 +386,8 @@ export async function getDashboardStats() {
        COUNT(*) FILTER (WHERE submitted_at >= NOW() - INTERVAL '30 days')::int AS recent_activities,
        MAX(submitted_at) AS latest_activity_at,
        (SELECT COUNT(*) FROM users WHERE role = 'verifier')::int AS verifier_count,
-       (SELECT COUNT(*) FROM users WHERE role = 'contributor')::int AS contributor_count
+       (SELECT COUNT(*) FROM users WHERE role = 'contributor')::int AS contributor_count,
+       (SELECT COALESCE(SUM(amount), 0) FROM reward_ledger) AS impact_credits
      FROM activities`
   );
 
@@ -428,7 +402,7 @@ export async function getDashboardStats() {
   const partnerOrgs = Number(row.partner_orgs) || 0;
   const recentActivities = Number(row.recent_activities) || 0;
   const latestActivityAt = row.latest_activity_at ? new Date(row.latest_activity_at).toISOString() : null;
-  const impactCredits = approvedActivities * 10;
+  const impactCredits = Number(row.impact_credits) || 0;
   const approvalRate = totalActivities > 0 ? Math.round((approvedActivities / totalActivities) * 100) : 0;
   const averageKgPerApprovedActivity = approvedActivities > 0
     ? Number((approvedKgCollected / approvedActivities).toFixed(1))

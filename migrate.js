@@ -1,8 +1,6 @@
 import fs from 'fs';
 import pg from 'pg';
-import dotenv from 'dotenv';
-
-dotenv.config();
+import './src/config/loadEnv.js';
 
 const { Client } = pg;
 
