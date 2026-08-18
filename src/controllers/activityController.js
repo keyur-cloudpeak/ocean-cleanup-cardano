@@ -180,7 +180,9 @@ async function update(req, res) {
       return res.status(404).json({ ok: false, error: 'Activity not found' });
     }
 
-    if (req.user.role !== 'contributor' || req.user.id !== existing.contributorId) {
+    const isOwner = req.user.id === existing.contributorId;
+    const isAllowedRole = req.user.role === 'contributor' || req.user.role === 'citizen';
+    if (!isOwner || !isAllowedRole) {
       return res.status(403).json({ ok: false, error: 'Forbidden' });
     }
 

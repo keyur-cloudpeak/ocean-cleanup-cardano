@@ -8,7 +8,7 @@ const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 router.get('/', activityController.list);
-router.post('/', authenticate, authorizeRoles('contributor'), upload.array('images', 10), activityController.create);
+router.post('/', authenticate, authorizeRoles('citizen', 'contributor'), upload.array('images', 10), activityController.create);
 router.get('/:id', activityController.getById);
 router.get('/:id/proof', activityController.proof);
 router.post('/:id/review', authenticate, authorizeRoles('admin', 'verifier'), activityController.review);
