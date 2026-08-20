@@ -372,6 +372,82 @@ export async function getContributorStats(contributorId) {
   };
 }
 
+/**
+ * getContributorInsights — backs the "Top Locations / Disposal Method /
+ * Wildlife & Environmental Impact" panel on the contributor overview page.
+ * Location rows are grouped on the first comma-separated segment of the
+ * address (the landmark) so nearby cleanups at the same site roll up
+ * together instead of fragmenting into near-duplicate rows.
+ */
+export async function getContributorInsights(contributorId) {
+  const locationsResult = await query(
+    `SELECT split_part(location, ',', 1) AS location,
+            COALESCE(SUM(quantity), 0) AS kg,
+            COUNT(*)::int AS count
+     FROM activities
+     WHERE contributor_id = $1 AND status = 'approved'
+     GROUP BY split_part(location, ',', 1)
+     ORDER BY kg DESC
+     LIMIT 5`,
+    [contributorId]
+  );
+
+  const disposalResult = await query(
+    `SELECT LOWER(COALESCE(NULLIF(TRIM(disposal_method), ''), 'not specified')) AS key,
+            COALESCE(SUM(quantity), 0) AS kg
+     FROM activities
+     WHERE contributor_id = $1 AND status = 'approved'
+     GROUP BY 1
+     ORDER BY kg DESC`,
+    [contributorId]
+  );
+
+  const wildlifeResult = await query(
+    `SELECT LOWER(COALESCE(NULLIF(TRIM(condition), ''), 'not specified')) AS key,
+            COUNT(*)::int AS count
+     FROM activities
+     WHERE contributor_id = $1 AND species_sighted IS NOT NULL AND TRIM(species_sighted) != ''
+     GROUP BY 1
+     ORDER BY count DESC`,
+    [contributorId]
+  );
+
+  const totalResult = await query(
+    `SELECT COUNT(*)::int AS total FROM activities WHERE contributor_id = $1`,
+    [contributorId]
+  );
+
+  const locRows = locationsResult.rows.map(r => ({
+    location: r.location?.trim() || 'Unspecified',
+    kg: Number(r.kg) || 0,
+    count: Number(r.count) || 0,
+  }));
+  const maxLocKg = locRows[0]?.kg || 1;
+  const topLocations = locRows.map(r => ({ ...r, pct: Math.round((r.kg / maxLocKg) * 100) }));
+
+  const dispRows = disposalResult.rows.map(r => ({ key: r.key, kg: Number(r.kg) || 0 }));
+  const totalDisposalKg = dispRows.reduce((s, r) => s + r.kg, 0) || 1;
+  const disposalStats = dispRows.map(r => ({ ...r, pct: Math.round((r.kg / totalDisposalKg) * 100) }));
+
+  const wildlifeRows = wildlifeResult.rows.map(r => ({ key: r.key, count: Number(r.count) || 0 }));
+  const totalSightings = wildlifeRows.reduce((s, r) => s + r.count, 0);
+  const totalActivities = Number(totalResult.rows[0]?.total) || 0;
+  const wildlifeBreakdown = wildlifeRows.map(r => ({
+    ...r,
+    pct: Math.round((r.count / (totalSightings || 1)) * 100),
+  }));
+
+  return {
+    topLocations,
+    disposalStats,
+    wildlife: {
+      total: totalSightings,
+      pctOfCleanups: totalActivities ? Math.round((totalSightings / totalActivities) * 100) : 0,
+      breakdown: wildlifeBreakdown,
+    },
+  };
+}
+
 export async function getDashboardStats() {
   const result = await query(
     `SELECT

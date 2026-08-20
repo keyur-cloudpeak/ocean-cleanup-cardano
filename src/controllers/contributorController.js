@@ -1,4 +1,4 @@
-import { getContributorStats } from '../services/activityService.js';
+import { getContributorStats, getContributorInsights } from '../services/activityService.js';
 
 /**
  * GET /api/contributor/stats
@@ -20,4 +20,24 @@ async function getStats(req, res) {
   }
 }
 
-export default { getStats };
+/**
+ * GET /api/contributor/insights
+ * Returns top locations, disposal method breakdown, and wildlife sighting
+ * stats for the authenticated contributor's activities.
+ */
+async function getInsights(req, res) {
+  try {
+    const contributorId = req.user?.id;
+    if (!contributorId) {
+      return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    }
+
+    const insights = await getContributorInsights(contributorId);
+    res.json({ ok: true, insights });
+  } catch (error) {
+    console.error('Contributor insights error:', error);
+    res.status(500).json({ ok: false, error: 'Failed to compute contributor insights' });
+  }
+}
+
+export default { getStats, getInsights };
