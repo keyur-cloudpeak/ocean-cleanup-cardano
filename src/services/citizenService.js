@@ -257,6 +257,7 @@ export async function getCitizenActivities(citizenId) {
     submittedAt: r.submitted_at,
     notes: r.notes,
     imageIpfsUrl: r.image_ipfs_url ? (Array.isArray(r.image_ipfs_url) ? r.image_ipfs_url : [r.image_ipfs_url]) : [],
+    imageGatewayUrl: r.image_gateway_url ? (Array.isArray(r.image_gateway_url) ? r.image_gateway_url : [r.image_gateway_url]) : [],
     reviewNote: r.review_note,
     pointsAwarded: Number(r.points_awarded) || 0
   }));
