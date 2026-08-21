@@ -448,6 +448,67 @@ export async function getContributorInsights(contributorId) {
   };
 }
 
+/**
+ * getContributorExportSummary — total submitted vs. approved counts for a
+ * contributor within a date range, used to compute the approval rate shown
+ * on the field report PDF (the export itself only lists approved rows).
+ */
+export async function getContributorExportSummary(contributorId, from, to) {
+  const result = await query(
+    `SELECT
+       COUNT(*)::int                                       AS total_submitted,
+       COUNT(*) FILTER (WHERE status = 'approved')::int     AS total_approved
+     FROM activities
+     WHERE contributor_id = $1
+       AND submitted_at::date BETWEEN $2::date AND $3::date`,
+    [contributorId, from, to]
+  );
+
+  const row = result.rows[0] || {};
+  return {
+    totalSubmitted: Number(row.total_submitted) || 0,
+    totalApproved: Number(row.total_approved) || 0,
+  };
+}
+
+/**
+ * getContributorExportActivities — approved activities for the contributor
+ * field report PDF, scoped to a submitted_at date range.
+ */
+export async function getContributorExportActivities(contributorId, from, to) {
+  const result = await query(
+    `SELECT location, category, quantity, disposal_method, shoreline_type, tide_state,
+            hazards_medical, hazards_chemical, hazards_unstable, species_sighted,
+            habitat_stress, condition, submitted_at, onchain_tx_hash, onchain_status
+     FROM activities
+     WHERE contributor_id = $1
+       AND status = 'approved'
+       AND submitted_at::date BETWEEN $2::date AND $3::date
+     ORDER BY submitted_at DESC`,
+    [contributorId, from, to]
+  );
+
+  return result.rows.map((row) => ({
+    location: row.location,
+    category: row.category,
+    quantity: Number(row.quantity) || 0,
+    disposalMethod: row.disposal_method,
+    shorelineType: row.shoreline_type,
+    tideState: row.tide_state,
+    hazards: {
+      medical: row.hazards_medical,
+      chemical: row.hazards_chemical,
+      unstable: row.hazards_unstable,
+    },
+    speciesSighted: row.species_sighted,
+    habitatStress: row.habitat_stress,
+    condition: row.condition,
+    submittedAt: row.submitted_at,
+    onchainTxHash: row.onchain_tx_hash,
+    onchainStatus: row.onchain_status,
+  }));
+}
+
 export async function getDashboardStats() {
   const result = await query(
     `SELECT

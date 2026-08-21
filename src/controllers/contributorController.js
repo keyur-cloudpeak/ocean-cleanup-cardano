@@ -1,4 +1,19 @@
-import { getContributorStats, getContributorInsights } from '../services/activityService.js';
+import { getContributorStats, getContributorInsights, getContributorExportSummary, getContributorExportActivities } from '../services/activityService.js';
+import { findUserById } from '../services/userService.js';
+import { streamContributorReportPdf } from '../services/reportPdfService.js';
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function toDateInputValue(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function defaultExportRange() {
+  const to = new Date();
+  const from = new Date();
+  from.setMonth(from.getMonth() - 6);
+  return { from: toDateInputValue(from), to: toDateInputValue(to) };
+}
 
 /**
  * GET /api/contributor/stats
@@ -40,4 +55,43 @@ async function getInsights(req, res) {
   }
 }
 
-export default { getStats, getInsights };
+/**
+ * GET /api/contributor/export?from=YYYY-MM-DD&to=YYYY-MM-DD&format=pdf
+ * Streams a PDF field report of the authenticated contributor's approved
+ * activities within the given date range (defaults to the last 6 months).
+ */
+async function exportReport(req, res) {
+  try {
+    const contributorId = req.user?.id;
+    if (!contributorId) {
+      return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    }
+
+    const defaults = defaultExportRange();
+    let from = DATE_PATTERN.test(req.query.from || '') ? req.query.from : defaults.from;
+    let to = DATE_PATTERN.test(req.query.to || '') ? req.query.to : defaults.to;
+    if (from > to) {
+      [from, to] = [to, from];
+    }
+
+    const [contributor, summary, activities] = await Promise.all([
+      findUserById(contributorId),
+      getContributorExportSummary(contributorId, from, to),
+      getContributorExportActivities(contributorId, from, to)
+    ]);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="field-report-${from}-to-${to}.pdf"`);
+
+    streamContributorReportPdf(res, { contributor, from, to, summary, activities });
+  } catch (error) {
+    console.error('Contributor export error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'Failed to generate report' });
+    } else {
+      res.end();
+    }
+  }
+}
+
+export default { getStats, getInsights, exportReport };

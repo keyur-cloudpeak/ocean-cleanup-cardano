@@ -10,4 +10,7 @@ router.get('/stats', authenticate, authorizeRoles('contributor', 'admin'), contr
 // GET /api/contributor/insights — locations, disposal, and wildlife breakdowns
 router.get('/insights', authenticate, authorizeRoles('contributor', 'admin'), contributorController.getInsights);
 
+// GET /api/contributor/export — PDF field report of the contributor's approved activities
+router.get('/export', authenticate, authorizeRoles('contributor', 'admin'), contributorController.exportReport);
+
 export default router;
