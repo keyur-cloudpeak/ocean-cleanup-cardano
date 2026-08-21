@@ -372,9 +372,35 @@ export async function getContributorStats(contributorId) {
   };
 }
 
+const DEBRIS_ITEMS = [
+  { key: 'cigaretteButts', label: 'Cigarette butts', column: 'cigarette_butts' },
+  { key: 'foodWrappers', label: 'Food wrappers', column: 'food_wrappers' },
+  { key: 'bottleCaps', label: 'Bottle caps', column: 'bottle_caps' },
+  { key: 'fishingLine', label: 'Fishing line and nets', column: 'fishing_line' },
+  { key: 'straws', label: 'Straws and bags', column: 'straws' },
+  { key: 'bottles', label: 'Bottles and containers', column: 'bottles' },
+];
+
+/**
+ * computeTrend — for monitoredSites, compares total kg collected in the most
+ * recent half of visits to a location against the earlier half. A drop of
+ * more than 10% reads as the site getting cleaner ("improving"); a rise of
+ * more than 10% reads as it re-accumulating waste ("worsening").
+ */
+function computeTrend(earlierTotal, recentTotal) {
+  if (earlierTotal === 0) return recentTotal > 0 ? 'worsening' : 'stable';
+  const ratio = recentTotal / earlierTotal;
+  if (ratio <= 0.9) return 'improving';
+  if (ratio >= 1.1) return 'worsening';
+  return 'stable';
+}
+
 /**
  * getContributorInsights — backs the "Top Locations / Disposal Method /
- * Wildlife & Environmental Impact" panel on the contributor overview page.
+ * Wildlife & Environmental Impact" panel on the contributor overview page,
+ * plus the site-condition, hazard, debris, pollution, habitat, field-
+ * efficiency, data-quality, and monitored-site cards that surface the rest
+ * of the fields captured on the submission form but otherwise unused.
  * Location rows are grouped on the first comma-separated segment of the
  * address (the landmark) so nearby cleanups at the same site roll up
  * together instead of fragmenting into near-duplicate rows.
@@ -417,6 +443,123 @@ export async function getContributorInsights(contributorId) {
     [contributorId]
   );
 
+  const siteConditionsResult = await query(
+    `SELECT COALESCE(NULLIF(TRIM(shoreline_type), ''), 'Unspecified') AS shoreline_type,
+            COALESCE(NULLIF(TRIM(tide_state), ''), 'Unspecified') AS tide_state,
+            COUNT(*)::int AS count
+     FROM activities
+     WHERE contributor_id = $1 AND status = 'approved'
+     GROUP BY 1, 2
+     ORDER BY count DESC`,
+    [contributorId]
+  );
+
+  const hazardRowsResult = await query(
+    `SELECT location, submitted_at, hazards_medical, hazards_chemical, hazards_unstable
+     FROM activities
+     WHERE contributor_id = $1 AND (hazards_medical OR hazards_chemical OR hazards_unstable)
+     ORDER BY submitted_at DESC`,
+    [contributorId]
+  );
+
+  const debrisResult = await query(
+    `SELECT COALESCE(SUM(debris_cigarette_butts), 0) AS cigarette_butts,
+            COALESCE(SUM(debris_food_wrappers), 0)   AS food_wrappers,
+            COALESCE(SUM(debris_bottle_caps), 0)     AS bottle_caps,
+            COALESCE(SUM(debris_fishing_line), 0)    AS fishing_line,
+            COALESCE(SUM(debris_straws), 0)          AS straws,
+            COALESCE(SUM(debris_bottles), 0)         AS bottles
+     FROM activities
+     WHERE contributor_id = $1 AND status = 'approved'`,
+    [contributorId]
+  );
+
+  const microplasticsResult = await query(
+    `SELECT TRIM(LOWER(microplastics)) AS key, COUNT(*)::int AS count
+     FROM activities
+     WHERE contributor_id = $1 AND status = 'approved'
+       AND microplastics IS NOT NULL AND TRIM(microplastics) != ''
+       AND TRIM(LOWER(microplastics)) != 'none observed'
+     GROUP BY 1
+     ORDER BY count DESC`,
+    [contributorId]
+  );
+
+  const bulkItemsResult = await query(
+    `SELECT bulk_items, location, submitted_at
+     FROM activities
+     WHERE contributor_id = $1 AND status = 'approved'
+       AND bulk_items IS NOT NULL AND TRIM(bulk_items) != ''
+     ORDER BY submitted_at DESC
+     LIMIT 10`,
+    [contributorId]
+  );
+
+  const habitatStressResult = await query(
+    `SELECT LOWER(TRIM(habitat_stress)) AS key, MIN(TRIM(habitat_stress)) AS label, COUNT(*)::int AS count
+     FROM activities
+     WHERE contributor_id = $1 AND status = 'approved'
+       AND habitat_stress IS NOT NULL AND TRIM(habitat_stress) != ''
+     GROUP BY 1
+     ORDER BY count DESC
+     LIMIT 8`,
+    [contributorId]
+  );
+
+  const speciesObservationsResult = await query(
+    `SELECT LOWER(TRIM(species_sighted)) AS key, MIN(TRIM(species_sighted)) AS label, COUNT(*)::int AS count
+     FROM activities
+     WHERE contributor_id = $1 AND status = 'approved'
+       AND species_sighted IS NOT NULL AND TRIM(species_sighted) != ''
+     GROUP BY 1
+     ORDER BY count DESC
+     LIMIT 8`,
+    [contributorId]
+  );
+
+  const fieldTimeResult = await query(
+    `SELECT COALESCE(SUM(time_spent), 0) AS total_hours,
+            COALESCE(SUM(quantity), 0)   AS total_kg
+     FROM activities
+     WHERE contributor_id = $1 AND status = 'approved' AND time_spent IS NOT NULL`,
+    [contributorId]
+  );
+
+  const instrumentsResult = await query(
+    `SELECT LOWER(TRIM(instrument)) AS key, MIN(TRIM(instrument)) AS label, COUNT(*)::int AS count
+     FROM activities
+     WHERE contributor_id = $1 AND status = 'approved'
+       AND instrument IS NOT NULL AND TRIM(instrument) != ''
+     GROUP BY 1
+     ORDER BY count DESC`,
+    [contributorId]
+  );
+
+  const dataQualityResult = await query(
+    `SELECT COUNT(*) FILTER (WHERE status = 'approved' AND second_verifier IS NOT NULL)::int AS dual_verified_count,
+            COUNT(*) FILTER (WHERE follow_up = true)::int                                    AS follow_up_count
+     FROM activities
+     WHERE contributor_id = $1`,
+    [contributorId]
+  );
+
+  const followUpListResult = await query(
+    `SELECT location, submitted_at
+     FROM activities
+     WHERE contributor_id = $1 AND follow_up = true
+     ORDER BY submitted_at DESC
+     LIMIT 10`,
+    [contributorId]
+  );
+
+  const siteVisitsResult = await query(
+    `SELECT split_part(location, ',', 1) AS location, quantity, submitted_at, cleaned_before
+     FROM activities
+     WHERE contributor_id = $1 AND status = 'approved'
+     ORDER BY submitted_at ASC`,
+    [contributorId]
+  );
+
   const locRows = locationsResult.rows.map(r => ({
     location: r.location?.trim() || 'Unspecified',
     kg: Number(r.kg) || 0,
@@ -437,6 +580,79 @@ export async function getContributorInsights(contributorId) {
     pct: Math.round((r.count / (totalSightings || 1)) * 100),
   }));
 
+  const siteConditions = siteConditionsResult.rows.map(r => ({
+    shorelineType: r.shoreline_type,
+    tideState: r.tide_state,
+    count: Number(r.count) || 0,
+  }));
+
+  const hazardTypes = ['medical', 'chemical', 'unstable'];
+  const hazardCounts = hazardTypes.reduce((acc, type) => {
+    const flagged = hazardRowsResult.rows.filter(r => r[`hazards_${type}`]);
+    acc[type] = {
+      count: flagged.length,
+      lastLocation: flagged[0]?.location || null,
+      lastSubmittedAt: flagged[0]?.submitted_at || null,
+    };
+    return acc;
+  }, {});
+
+  const debrisRow = debrisResult.rows[0] || {};
+  const debrisTotals = DEBRIS_ITEMS.map(({ key, label, column }) => ({
+    key,
+    item: label,
+    total: Number(debrisRow[column]) || 0,
+  }));
+  const debrisSum = debrisTotals.reduce((s, d) => s + d.total, 0) || 1;
+  const debrisBreakdown = debrisTotals
+    .map(d => ({ ...d, pct: Math.round((d.total / debrisSum) * 100) }))
+    .sort((a, b) => b.total - a.total);
+
+  const microplastics = microplasticsResult.rows.map(r => ({ key: r.key, count: Number(r.count) || 0 }));
+
+  const bulkItemsLog = bulkItemsResult.rows.map(r => ({
+    items: r.bulk_items,
+    location: r.location,
+    submittedAt: r.submitted_at,
+  }));
+
+  const habitatStress = habitatStressResult.rows.map(r => ({ key: r.key, label: r.label, count: Number(r.count) || 0 }));
+  const speciesSighted = speciesObservationsResult.rows.map(r => ({ key: r.key, label: r.label, count: Number(r.count) || 0 }));
+
+  const totalHours = Number(fieldTimeResult.rows[0]?.total_hours) || 0;
+  const fieldKg = Number(fieldTimeResult.rows[0]?.total_kg) || 0;
+  const instruments = instrumentsResult.rows.map(r => ({ key: r.key, label: r.label, count: Number(r.count) || 0 }));
+
+  const dataQualityRow = dataQualityResult.rows[0] || {};
+  const followUpList = followUpListResult.rows.map(r => ({ location: r.location, submittedAt: r.submitted_at }));
+
+  const siteVisitGroups = new Map();
+  siteVisitsResult.rows.forEach((r) => {
+    const location = r.location?.trim() || 'Unspecified';
+    if (!siteVisitGroups.has(location)) siteVisitGroups.set(location, []);
+    siteVisitGroups.get(location).push({
+      quantity: Number(r.quantity) || 0,
+      submittedAt: r.submitted_at,
+      cleanedBefore: Boolean(r.cleaned_before),
+    });
+  });
+  const monitoredSites = [...siteVisitGroups.entries()]
+    .filter(([, visits]) => visits.length >= 2)
+    .map(([location, visits]) => {
+      const mid = Math.floor(visits.length / 2);
+      const earlierTotal = visits.slice(0, mid).reduce((s, v) => s + v.quantity, 0);
+      const recentTotal = visits.slice(mid).reduce((s, v) => s + v.quantity, 0);
+      return {
+        location,
+        visitCount: visits.length,
+        firstVisitAt: visits[0].submittedAt,
+        lastVisitAt: visits[visits.length - 1].submittedAt,
+        cleanedBeforeCount: visits.filter(v => v.cleanedBefore).length,
+        trend: computeTrend(earlierTotal, recentTotal),
+      };
+    })
+    .sort((a, b) => b.visitCount - a.visitCount || new Date(b.lastVisitAt) - new Date(a.lastVisitAt));
+
   return {
     topLocations,
     disposalStats,
@@ -445,6 +661,28 @@ export async function getContributorInsights(contributorId) {
       pctOfCleanups: totalActivities ? Math.round((totalSightings / totalActivities) * 100) : 0,
       breakdown: wildlifeBreakdown,
     },
+    siteConditions,
+    hazardCounts,
+    debrisBreakdown,
+    pollutionSeverity: {
+      microplastics,
+      bulkItemsLog,
+    },
+    habitatObservations: {
+      habitatStress,
+      speciesSighted,
+    },
+    fieldEfficiency: {
+      totalHours,
+      avgKgPerHour: totalHours > 0 ? Number((fieldKg / totalHours).toFixed(1)) : 0,
+      instruments,
+    },
+    dataQuality: {
+      dualVerifiedCount: Number(dataQualityRow.dual_verified_count) || 0,
+      followUpCount: Number(dataQualityRow.follow_up_count) || 0,
+      followUpList,
+    },
+    monitoredSites,
   };
 }
 
