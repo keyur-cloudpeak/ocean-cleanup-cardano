@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash   TEXT NOT NULL,
     role            user_role NOT NULL,
     is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    email_verified_at TIMESTAMPTZ,
+    email_verification_token_hash TEXT,
+    email_verification_token_expires_at TIMESTAMPTZ,
     organization_id UUID REFERENCES organizations(org_id),
     job_title       TEXT,
     years_experience TEXT,
@@ -55,6 +58,17 @@ ALTER TABLE users DROP COLUMN IF EXISTS wallet_address;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS job_title TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS years_experience TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_image_url TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token_expires_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_users_email_verification_token_hash
+    ON users (email_verification_token_hash);
+
+UPDATE users
+SET email_verified_at = COALESCE(email_verified_at, created_at)
+WHERE role IN ('citizen', 'contributor')
+  AND email_verified_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS activities (
     id                  TEXT PRIMARY KEY,
