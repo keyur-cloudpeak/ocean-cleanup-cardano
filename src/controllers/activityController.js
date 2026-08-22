@@ -11,6 +11,25 @@ import { send as sendActivityNotification } from '../services/notificationServic
 import { recordActivityOnChain, getActivityProof } from '../services/onchainProofService.js';
 import { recordActivityEvent } from '../services/activityEventService.js';
 import { awardApprovalPoints } from '../services/rewardLedgerService.js';
+import { fetchWeatherContext } from '../services/weatherService.js';
+
+// Fire-and-forget: looks up historical weather for the activity's site/date
+// and patches it onto the row once it resolves. Never awaited by the
+// request handler — a slow or failing weather API must never delay or
+// break activity creation (see weatherService.js for its own internal
+// timeout/error handling, which always resolves rather than rejecting).
+function backfillWeatherInBackground(activity) {
+  if (activity.lat == null || activity.lon == null) return;
+  fetchWeatherContext(activity.lat, activity.lon, activity.timestamp)
+    .then((weather) => updateActivity(activity.id, {
+      weatherConditions: weather.weatherConditions,
+      daysSinceRain: weather.daysSinceRain,
+      windSpeedKmh: weather.windSpeedKmh
+    }))
+    .catch((err) =>
+      console.error('[weatherService] background update failed for activity', activity.id, ':', err.message)
+    );
+}
 
 // Helper: convert a base64 data URI → { buffer, mimeType, filename }
 function parseBase64Image(dataUri) {
@@ -83,7 +102,8 @@ async function create(req, res) {
       microplastics, bulkItems, speciesSighted, condition, habitatStress,
       hazardsMedical, hazardsChemical, hazardsUnstable,
       instrument, timeSpent, secondVerifier, disposalMethod, followUp,
-      brands_identified
+      brands_identified,
+      surveyLengthM, surveyAreaSqm, surveyMethod, debrisSource
     } = req.body;
 
     if (!category || !location || !quantity) {
@@ -139,8 +159,11 @@ async function create(req, res) {
       hazardsMedical, hazardsChemical, hazardsUnstable,
       instrument, timeSpent, secondVerifier, disposalMethod, followUp,
       brandsIdentified: brands_identified,
+      surveyLengthM, surveyAreaSqm, surveyMethod, debrisSource,
       timestamp: req.body.timestamp || new Date().toISOString()
     });
+
+    backfillWeatherInBackground(activity);
 
     await recordActivityEvent({
       activityId: activity.id,
@@ -210,7 +233,8 @@ async function update(req, res) {
       microplastics, bulkItems, speciesSighted, condition, habitatStress,
       hazardsMedical, hazardsChemical, hazardsUnstable,
       instrument, timeSpent, secondVerifier, disposalMethod, followUp,
-      brands_identified
+      brands_identified,
+      surveyLengthM, surveyAreaSqm, surveyMethod, debrisSource
     } = req.body;
 
     const updates = {
@@ -229,7 +253,8 @@ async function update(req, res) {
       microplastics, bulkItems, speciesSighted, condition, habitatStress,
       hazardsMedical, hazardsChemical, hazardsUnstable,
       instrument, timeSpent, secondVerifier, disposalMethod, followUp,
-      brandsIdentified: brands_identified
+      brandsIdentified: brands_identified,
+      surveyLengthM, surveyAreaSqm, surveyMethod, debrisSource
     };
 
     if (req.files && req.files.length > 0) {

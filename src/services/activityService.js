@@ -104,6 +104,13 @@ function mapActivityRow(row) {
     disposalMethod: row.disposal_method,
     followUp: row.follow_up,
     brandsIdentified: row.brands_identified || {},
+    surveyLengthM: row.survey_length_m,
+    surveyAreaSqm: row.survey_area_sqm,
+    surveyMethod: row.survey_method,
+    debrisSource: row.debris_source,
+    weatherConditions: row.weather_conditions,
+    daysSinceRain: row.days_since_rain,
+    windSpeedKmh: row.wind_speed_kmh,
     reward: mapReward(row)
   };
 }
@@ -120,7 +127,8 @@ function getActivitySelectColumns() {
           shoreline_type, tide_state, cleaned_before, debris_cigarette_butts, debris_food_wrappers, debris_bottle_caps,
           debris_fishing_line, debris_straws, debris_bottles, microplastics, bulk_items, species_sighted, condition,
           habitat_stress, hazards_medical, hazards_chemical, hazards_unstable, instrument, time_spent, second_verifier,
-          disposal_method, follow_up, brands_identified`;
+          disposal_method, follow_up, brands_identified, survey_length_m, survey_area_sqm, survey_method,
+          debris_source, weather_conditions, days_since_rain, wind_speed_kmh`;
 }
 
 export async function listActivities(statusFilter = null) {
@@ -180,11 +188,12 @@ export async function createActivity(payload) {
       shoreline_type, tide_state, cleaned_before, debris_cigarette_butts, debris_food_wrappers, debris_bottle_caps,
       debris_fishing_line, debris_straws, debris_bottles, microplastics, bulk_items, species_sighted, condition,
       habitat_stress, hazards_medical, hazards_chemical, hazards_unstable, instrument, time_spent, second_verifier,
-      disposal_method, follow_up, brands_identified
+      disposal_method, follow_up, brands_identified, survey_length_m, survey_area_sqm, survey_method, debris_source
      ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8,
       $9, $10, $11, $12, $13, $14, $15, $16, 'pending',
-      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39
+      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39,
+      $40, $41, $42, $43
      )
      RETURNING ${getActivitySelectColumns()}`,
     [
@@ -210,7 +219,8 @@ export async function createActivity(payload) {
       payload.microplastics, payload.bulkItems, payload.speciesSighted, payload.condition, payload.habitatStress,
       Boolean(payload.hazardsMedical), Boolean(payload.hazardsChemical), Boolean(payload.hazardsUnstable),
       payload.instrument, normalizeNumber(payload.timeSpent), payload.secondVerifier, payload.disposalMethod, Boolean(payload.followUp),
-      normalizeBrandsIdentified(payload.brandsIdentified)
+      normalizeBrandsIdentified(payload.brandsIdentified),
+      normalizeNumber(payload.surveyLengthM), normalizeNumber(payload.surveyAreaSqm), payload.surveyMethod, payload.debrisSource
     ]
   );
 
@@ -266,6 +276,16 @@ export async function updateActivity(id, payload) {
   addField('disposal_method', payload.disposalMethod);
   addField('follow_up', payload.followUp !== undefined ? Boolean(payload.followUp) : undefined);
   addField('brands_identified', payload.brandsIdentified !== undefined ? normalizeBrandsIdentified(payload.brandsIdentified) : undefined);
+  addField('survey_length_m', payload.surveyLengthM !== undefined ? normalizeNumber(payload.surveyLengthM) : undefined);
+  addField('survey_area_sqm', payload.surveyAreaSqm !== undefined ? normalizeNumber(payload.surveyAreaSqm) : undefined);
+  addField('survey_method', payload.surveyMethod);
+  addField('debris_source', payload.debrisSource);
+  // Weather fields are system-populated (see weatherService.js) and are never
+  // taken from a contributor-facing request body — only internal callers
+  // (the post-create background fetch, the backfill script) pass these.
+  addField('weather_conditions', payload.weatherConditions);
+  addField('days_since_rain', payload.daysSinceRain !== undefined ? normalizeNumber(payload.daysSinceRain) : undefined);
+  addField('wind_speed_kmh', payload.windSpeedKmh !== undefined ? normalizeNumber(payload.windSpeedKmh) : undefined);
 
   if (updates.length === 0) {
     return getActivityById(id);

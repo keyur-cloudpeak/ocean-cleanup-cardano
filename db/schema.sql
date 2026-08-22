@@ -153,6 +153,13 @@ ALTER TABLE activities ADD COLUMN IF NOT EXISTS disposal_method TEXT;
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS follow_up BOOLEAN DEFAULT FALSE;
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS reviewed_by TEXT REFERENCES users(id);
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS brands_identified JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE activities ADD COLUMN IF NOT EXISTS survey_length_m NUMERIC(10, 2);
+ALTER TABLE activities ADD COLUMN IF NOT EXISTS survey_area_sqm NUMERIC(10, 2);
+ALTER TABLE activities ADD COLUMN IF NOT EXISTS survey_method TEXT;
+ALTER TABLE activities ADD COLUMN IF NOT EXISTS weather_conditions TEXT;
+ALTER TABLE activities ADD COLUMN IF NOT EXISTS days_since_rain INTEGER;
+ALTER TABLE activities ADD COLUMN IF NOT EXISTS wind_speed_kmh NUMERIC(6, 2);
+ALTER TABLE activities ADD COLUMN IF NOT EXISTS debris_source TEXT;
 
 -- On-chain proof columns (safe to re-run)
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS onchain_tx_hash     TEXT;
