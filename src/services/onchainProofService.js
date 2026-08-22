@@ -79,6 +79,11 @@ async function fetchProofMetadataFromChain(txHash) {
   return proofEntry.json_metadata;
 }
 
+function hasBrandsIdentified(value) {
+  if (!value || typeof value !== 'object') return false;
+  return Object.values(value).some((list) => Array.isArray(list) && list.length > 0);
+}
+
 /**
  * Builds a stable, deterministic hash of the activity record. Any later
  * tampering with the database row will produce a different hash than the
@@ -112,6 +117,42 @@ export function hashActivity(activity) {
   // old records with a NULL reviewed_by value remain verifiable.
   if (reviewedBy !== null && reviewedBy !== undefined) {
     canonicalActivity.reviewedBy = reviewedBy;
+  }
+
+  // Fold in the newer optional fields (brand attribution, debris source,
+  // survey size/method) - but only when there's real signal to protect.
+  // Every activity created before these columns existed (and any created
+  // since where the contributor just left them blank) has brands_identified
+  // = '{}' and null survey/debris-source columns; adding empty keys for
+  // those would change hashActivity()'s output for rows that never actually
+  // changed, permanently breaking verification of every proof already
+  // committed on-chain. Only rows with actual data get the richer hash.
+  //
+  // Deliberately NOT included at all: weather_conditions / days_since_rain /
+  // wind_speed_kmh. Those are fetched asynchronously after creation (and can
+  // be populated later still by scripts/backfillWeather.js), so they aren't
+  // guaranteed to be settled by the time a proof is submitted - and a later
+  // backfill would retroactively change the hash for a non-tampering reason.
+  const brandsIdentified = activity.brands_identified ?? activity.brandsIdentified;
+  if (hasBrandsIdentified(brandsIdentified)) {
+    canonicalActivity.brandsIdentified = brandsIdentified;
+  }
+
+  const debrisSource = activity.debris_source ?? activity.debrisSource;
+  if (debrisSource) {
+    canonicalActivity.debrisSource = debrisSource;
+  }
+
+  const surveyLengthM = activity.survey_length_m ?? activity.surveyLengthM;
+  const surveyAreaSqm = activity.survey_area_sqm ?? activity.surveyAreaSqm;
+  const surveyMethod = activity.survey_method ?? activity.surveyMethod;
+  const hasSurveyMethod = surveyMethod && surveyMethod !== 'Not measured';
+  if (surveyLengthM != null || surveyAreaSqm != null || hasSurveyMethod) {
+    canonicalActivity.survey = {
+      ...(surveyLengthM != null ? { lengthM: surveyLengthM } : {}),
+      ...(surveyAreaSqm != null ? { areaSqm: surveyAreaSqm } : {}),
+      ...(hasSurveyMethod ? { method: surveyMethod } : {})
+    };
   }
 
   const canonical = JSON.stringify(canonicalActivity);
