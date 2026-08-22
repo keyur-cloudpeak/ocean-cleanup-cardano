@@ -105,8 +105,9 @@ async function signup(req, res) {
 
     if (verificationRequired) {
       const verificationUrl = `${env.apiBaseUrl}/api/auth/verify-email?token=${verificationToken}`;
+      let emailResult;
       try {
-        await sendVerificationEmail({
+        emailResult = await sendVerificationEmail({
           to: user.email,
           firstName: user.firstName,
           verificationUrl
@@ -119,7 +120,9 @@ async function signup(req, res) {
       return res.status(201).json({
         ok: true,
         requiresEmailVerification: true,
-        message: 'Verification email sent',
+        message: emailResult?.delivered === false
+          ? 'Email service is in console mode. Check the backend terminal for the verification link.'
+          : 'Verification email sent',
         user: buildUserPayload(user)
       });
     }
@@ -135,6 +138,25 @@ async function signup(req, res) {
     }
 
     res.status(500).json({ ok: false, message: 'Internal server error' });
+  }
+}
+
+async function checkEmailAvailability(req, res) {
+  try {
+    const email = normalizeEmail(req.query.email || req.body?.email);
+    if (!email) {
+      return res.status(400).json({ ok: false, message: 'Email is required' });
+    }
+
+    const existingUser = await findUserByEmail(email);
+    return res.json({
+      ok: true,
+      available: !existingUser,
+      message: existingUser ? 'Email already exists' : 'Email is available'
+    });
+  } catch (error) {
+    console.error('Check email availability error:', error);
+    return res.status(500).json({ ok: false, message: 'Unable to check email availability' });
   }
 }
 
@@ -289,4 +311,4 @@ async function updateProfile(req, res) {
   }
 }
 
-export default { signup, login, verify, verifyEmail, logout, updateProfile };
+export default { signup, checkEmailAvailability, login, verify, verifyEmail, logout, updateProfile };

@@ -33,6 +33,12 @@ HOST=localhost
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ocean_db
 JWT_SECRET=your_secret_here
 
+# Email verification (required for Citizen/Contributor signup)
+EMAIL_PROVIDER=gmail
+GMAIL_USER=your-gmail-address@gmail.com
+GMAIL_APP_PASSWORD=your-16-character-gmail-app-password
+API_BASE_URL=http://localhost:3000
+
 # Cardano on-chain proofs
 CARDANO_NETWORK=Preprod
 BLOCKFROST_API_KEY=your_blockfrost_project_id
@@ -43,6 +49,12 @@ POINTS_PER_APPROVED_ACTIVITY=10
 ```
 
 `JWT_SECRET` has an insecure default (`fallback_secret_key_for_dev`) if unset — always set it explicitly outside local dev.
+
+Email verification uses Gmail through Nodemailer. Enable 2-Step Verification
+for the Gmail account, create a 16-character Google App Password, and set
+`GMAIL_USER` and `GMAIL_APP_PASSWORD` in `.env`. Use the app password without
+spaces. `EMAIL_PROVIDER=console` is only a local development mode; it prints
+the verification URL in the server terminal and does not send an email.
 
 ## Database
 
