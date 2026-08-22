@@ -321,6 +321,27 @@ async function verifyEmail(req, res) {
               ">
                 Your <strong style="color:#cbd5e1;">BlueMind</strong> account is now active and ready to use.
               </p>
+              <!-- Login CTA -->
+                <table role="presentation" align="center" style="margin:0 auto;">
+                  <tr>
+                    <td style="
+                      background:linear-gradient(90deg, #2dd4bf, #5eead4);
+                      border-radius:10px;
+                    ">
+                      <a href="https://bluemind-web.vercel.app/login" style="
+                        display:inline-block;
+                        padding:14px 36px;
+                        font-size:14px;
+                        font-weight:700;
+                        letter-spacing:0.5px;
+                        color:#062a29;
+                        text-decoration:none;
+                      ">
+                        CONTINUE TO LOGIN &nbsp;&#8594;
+                      </a>
+                    </td>
+                  </tr>
+                </table>
             </div>
           </div>
         </body>
