@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { query } from '../config/connection.js';
 
 function normalizeUsername(username) {
@@ -6,6 +7,22 @@ function normalizeUsername(username) {
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
+}
+
+async function ensureUserVerificationColumns() {
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS email_verification_token_hash TEXT;
+
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS email_verification_token_expires_at TIMESTAMPTZ;
+
+    CREATE INDEX IF NOT EXISTS idx_users_email_verification_token_hash
+      ON users (email_verification_token_hash);
+  `);
 }
 
 function mapUserRow(row) {
@@ -20,6 +37,7 @@ function mapUserRow(row) {
     password: row.password_hash,
     role: row.role,
     active: row.is_active,
+    emailVerifiedAt: row.email_verified_at || null,
     organizationId: row.organization_id || null,
     jobTitle: row.job_title || null,
     yearsExperience: row.years_experience || null,
@@ -29,8 +47,9 @@ function mapUserRow(row) {
 }
 
 export async function getUsers() {
+  await ensureUserVerificationColumns();
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
      ORDER BY created_at DESC`
   );
@@ -42,11 +61,12 @@ export async function saveUsers() {
 }
 
 export async function findUserByUsername(username) {
+  await ensureUserVerificationColumns();
   const normalizedUsername = normalizeUsername(username);
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
-     WHERE LOWER(email) = $1
+     WHERE LOWER(username) = $1
      LIMIT 1`,
     [normalizedUsername]
   );
@@ -55,9 +75,10 @@ export async function findUserByUsername(username) {
 }
 
 export async function findUserByEmail(email) {
+  await ensureUserVerificationColumns();
   const normalizedEmail = normalizeEmail(email);
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
      WHERE LOWER(email) = $1
      LIMIT 1`,
@@ -68,14 +89,19 @@ export async function findUserByEmail(email) {
 }
 
 export async function createUser(userData) {
+  await ensureUserVerificationColumns();
+
   const id = Date.now().toString();
   const username = normalizeUsername(userData.username);
   const email = normalizeEmail(userData.email);
+  const emailVerifiedAt = userData.emailVerifiedAt || null;
+  const emailVerificationTokenHash = userData.emailVerificationTokenHash || null;
+  const emailVerificationTokenExpiresAt = userData.emailVerificationTokenExpiresAt || null;
 
   const result = await query(
-    `INSERT INTO users (id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at`,
+    `INSERT INTO users (id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, email_verification_token_hash, email_verification_token_expires_at, organization_id, job_title, years_experience, profile_image_url)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at`,
     [
       id,
       userData.firstName,
@@ -85,6 +111,9 @@ export async function createUser(userData) {
       userData.password,
       userData.role,
       userData.active !== false,
+      emailVerifiedAt,
+      emailVerificationTokenHash,
+      emailVerificationTokenExpiresAt,
       userData.organizationId || null,
       userData.jobTitle || null,
       userData.yearsExperience || null,
@@ -125,8 +154,9 @@ export async function deleteUserLoginRecords(userId) {
 }
 
 export async function findUserById(id) {
+  await ensureUserVerificationColumns();
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
      WHERE id = $1
      LIMIT 1`,
@@ -137,11 +167,12 @@ export async function findUserById(id) {
 }
 
 export async function setUserActiveStatus(id, isActive) {
+  await ensureUserVerificationColumns();
   const result = await query(
     `UPDATE users
      SET is_active = $2
      WHERE id = $1
-     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at`,
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at`,
     [id, Boolean(isActive)]
   );
 
@@ -149,6 +180,7 @@ export async function setUserActiveStatus(id, isActive) {
 }
 
 export async function updateUserProfile(id, profileData) {
+  await ensureUserVerificationColumns();
   const result = await query(
     `UPDATE users
      SET first_name = COALESCE($2, first_name),
@@ -157,7 +189,7 @@ export async function updateUserProfile(id, profileData) {
          years_experience = COALESCE($5, years_experience),
          profile_image_url = COALESCE($6, profile_image_url)
      WHERE id = $1
-     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, organization_id, job_title, years_experience, profile_image_url, created_at`,
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at`,
     [
       id,
       profileData.firstName || null,
@@ -168,4 +200,44 @@ export async function updateUserProfile(id, profileData) {
     ]
   );
   return mapUserRow(result.rows[0]);
+}
+
+export async function findUserByEmailVerificationToken(token) {
+  await ensureUserVerificationColumns();
+  const tokenHash = crypto.createHash('sha256').update(String(token || '')).digest('hex');
+  const result = await query(
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at
+     FROM users
+     WHERE email_verification_token_hash = $1
+       AND email_verification_token_expires_at > NOW()
+     LIMIT 1`,
+    [tokenHash]
+  );
+
+  return mapUserRow(result.rows[0]);
+}
+
+export async function markUserEmailVerified(id) {
+  await ensureUserVerificationColumns();
+  const result = await query(
+    `UPDATE users
+     SET email_verified_at = NOW()
+     WHERE id = $1
+     RETURNING id`,
+    [id]
+  );
+
+  return mapUserRow(result.rows[0]);
+}
+
+export async function deleteUserById(id) {
+  await ensureUserVerificationColumns();
+  const result = await query(
+    `DELETE FROM users
+     WHERE id = $1
+     RETURNING id`,
+    [id]
+  );
+
+  return result.rowCount;
 }
