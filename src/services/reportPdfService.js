@@ -4,7 +4,9 @@ const PRIMARY = '#2E9E9B';
 const MUTED = '#5b6b73';
 const BORDER = '#d8e1e5';
 const DARK = '#0f172a';
-const ROW_HEIGHT = 18;
+const ROW_MIN_HEIGHT = 18;
+const CELL_PADDING_Y = 2;
+const CELL_PADDING_X = 2;
 
 function fmtDate(value) {
   const d = value instanceof Date ? value : new Date(value);
@@ -44,33 +46,58 @@ function sectionTitle(doc, title) {
 function table(doc, { columns, rows }) {
   const startX = doc.page.margins.left;
   const tableWidth = columns.reduce((sum, col) => sum + col.width, 0);
+  const headerFontSize = 8.5;
+  const bodyFontSize = 9;
+  const bodyLineGap = 1.5;
+  const headerLineGap = 0.5;
+
+  function cellHeight(text, width, fontSize, lineGap) {
+    doc.fontSize(fontSize);
+    return doc.heightOfString(String(text), { width, lineGap });
+  }
 
   function drawHeader() {
     let x = startX;
     const y = doc.y;
-    doc.fontSize(8.5).fillColor(MUTED);
+    doc.fontSize(headerFontSize).fillColor(MUTED);
+    const headerHeight = Math.max(
+      ...columns.map((col) => cellHeight(col.label.toUpperCase(), col.width - CELL_PADDING_X * 2, headerFontSize, headerLineGap))
+    );
     columns.forEach((col) => {
-      doc.text(col.label.toUpperCase(), x, y, { width: col.width, ellipsis: true });
+      doc.text(col.label.toUpperCase(), x + CELL_PADDING_X, y, {
+        width: col.width - CELL_PADDING_X * 2,
+        ellipsis: true,
+      });
       x += col.width;
     });
-    doc.y = y + 12;
+    doc.y = y + headerHeight + 2;
     doc.moveTo(startX, doc.y).lineTo(startX + tableWidth, doc.y).strokeColor(BORDER).stroke();
     doc.y += 5;
   }
 
-  ensureSpace(doc, ROW_HEIGHT * 2);
+  ensureSpace(doc, ROW_MIN_HEIGHT * 2);
   drawHeader();
 
   rows.forEach((row) => {
-    ensureSpace(doc, ROW_HEIGHT, drawHeader);
+    doc.fontSize(bodyFontSize);
+    const rowHeight = Math.max(
+      ROW_MIN_HEIGHT,
+      ...row.map((cell, i) => cellHeight(cell, columns[i].width - CELL_PADDING_X * 2, bodyFontSize, bodyLineGap) + CELL_PADDING_Y * 2)
+    );
+    ensureSpace(doc, rowHeight + 4, drawHeader);
     let x = startX;
     const y = doc.y;
-    doc.fontSize(9).fillColor(DARK);
+    doc.fontSize(bodyFontSize).fillColor(DARK);
     row.forEach((cell, i) => {
-      doc.text(String(cell), x, y, { width: columns[i].width, ellipsis: true });
+      doc.text(String(cell), x + CELL_PADDING_X, y + CELL_PADDING_Y, {
+        width: columns[i].width - CELL_PADDING_X * 2,
+        ellipsis: false,
+        lineGap: bodyLineGap,
+      });
       x += columns[i].width;
     });
-    doc.y = y + ROW_HEIGHT;
+    doc.y = y + rowHeight;
+    doc.moveTo(startX, doc.y).lineTo(startX + tableWidth, doc.y).strokeColor(BORDER).stroke();
   });
 
   doc.moveDown(0.6);
@@ -86,12 +113,22 @@ export function streamContributorReportPdf(res, { contributor, from, to, summary
 
   const contributorName = [contributor?.firstName, contributor?.lastName].filter(Boolean).join(' ') || 'Contributor';
   const jobTitle = contributor?.jobTitle;
+  const contentX = doc.page.margins.left;
+  const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
 
-  doc.fontSize(20).fillColor(DARK).text('BlueMind Field Report');
+  doc.fontSize(20).fillColor(DARK).text('BlueMind Field Report', contentX, doc.y, {
+    width: contentWidth,
+    align: 'center',
+  });
   doc.moveDown(0.25);
-  doc.fontSize(11).fillColor(MUTED).text(`${contributorName}${jobTitle ? ` · ${jobTitle}` : ''}`);
-  doc.text(`Report period: ${fmtDate(from)} – ${fmtDate(to)}`);
-  doc.text(`Generated: ${fmtDate(new Date())}`);
+  doc.fontSize(11).fillColor(MUTED).text(`${contributorName}${jobTitle ? ` · ${jobTitle}` : ''}`, contentX, doc.y, {
+    width: contentWidth,
+    align: 'center',
+  });
+  doc.text(`Report period: ${fmtDate(from)} – ${fmtDate(to)}`, contentX, doc.y, {
+    width: contentWidth,
+    align: 'center',
+  });
   doc.moveDown(0.8);
   doc.moveTo(doc.page.margins.left, doc.y).lineTo(doc.page.width - doc.page.margins.right, doc.y).strokeColor(BORDER).stroke();
   doc.moveDown(0.8);
@@ -127,11 +164,11 @@ export function streamContributorReportPdf(res, { contributor, from, to, summary
     table(doc, {
       columns: [
         { label: 'Date', width: 62 },
-        { label: 'Location', width: 130 },
+        { label: 'Location', width: 150 },
         { label: 'Category', width: 60 },
         { label: 'Qty (kg)', width: 50 },
-        { label: 'Disposal', width: 80 },
-        { label: 'Proof tx', width: 105 },
+        { label: 'Disposal', width: 72 },
+        { label: 'Proof tx', width: 93 },
       ],
       rows: activities.map((a) => [
         fmtDate(a.submittedAt),
@@ -187,15 +224,6 @@ export function streamContributorReportPdf(res, { contributor, from, to, summary
       rows: habitatFreq.length ? habitatFreq.map(([key, count]) => [key, count]) : [['No habitat stress notes recorded', '']],
     });
   }
-
-  ensureSpace(doc, 40);
-  doc.moveDown(0.6);
-  doc.fontSize(8).fillColor(MUTED).text(
-    "Every approved activity above is independently timestamped on the Cardano blockchain by BlueMind's backend wallet. "
-    + 'To verify an individual entry, fetch GET /api/activities/:id/proof with that activity\'s ID.',
-    doc.page.margins.left,
-    doc.y
-  );
 
   doc.end();
 }
