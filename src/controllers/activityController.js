@@ -82,7 +82,8 @@ async function create(req, res) {
       debrisCigaretteButts, debrisFoodWrappers, debrisBottleCaps, debrisFishingLine, debrisStraws, debrisBottles,
       microplastics, bulkItems, speciesSighted, condition, habitatStress,
       hazardsMedical, hazardsChemical, hazardsUnstable,
-      instrument, timeSpent, secondVerifier, disposalMethod, followUp
+      instrument, timeSpent, secondVerifier, disposalMethod, followUp,
+      brands_identified
     } = req.body;
 
     if (!category || !location || !quantity) {
@@ -137,6 +138,7 @@ async function create(req, res) {
       microplastics, bulkItems, speciesSighted, condition, habitatStress,
       hazardsMedical, hazardsChemical, hazardsUnstable,
       instrument, timeSpent, secondVerifier, disposalMethod, followUp,
+      brandsIdentified: brands_identified,
       timestamp: req.body.timestamp || new Date().toISOString()
     });
 
@@ -207,7 +209,8 @@ async function update(req, res) {
       debrisCigaretteButts, debrisFoodWrappers, debrisBottleCaps, debrisFishingLine, debrisStraws, debrisBottles,
       microplastics, bulkItems, speciesSighted, condition, habitatStress,
       hazardsMedical, hazardsChemical, hazardsUnstable,
-      instrument, timeSpent, secondVerifier, disposalMethod, followUp
+      instrument, timeSpent, secondVerifier, disposalMethod, followUp,
+      brands_identified
     } = req.body;
 
     const updates = {
@@ -225,7 +228,8 @@ async function update(req, res) {
       debrisCigaretteButts, debrisFoodWrappers, debrisBottleCaps, debrisFishingLine, debrisStraws, debrisBottles,
       microplastics, bulkItems, speciesSighted, condition, habitatStress,
       hazardsMedical, hazardsChemical, hazardsUnstable,
-      instrument, timeSpent, secondVerifier, disposalMethod, followUp
+      instrument, timeSpent, secondVerifier, disposalMethod, followUp,
+      brandsIdentified: brands_identified
     };
 
     if (req.files && req.files.length > 0) {

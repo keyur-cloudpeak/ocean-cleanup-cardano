@@ -20,6 +20,18 @@ function normalizeNumber(value) {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
+function normalizeBrandsIdentified(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return typeof value === 'object' ? value : null;
+}
+
 function mapReward(row) {
   if (!row?.reward_id && !row?.reward_tx_hash && row?.reward_amount == null && !row?.reward_token_type && !row?.reward_minted_at) {
     return null;
@@ -91,6 +103,7 @@ function mapActivityRow(row) {
     secondVerifier: row.second_verifier,
     disposalMethod: row.disposal_method,
     followUp: row.follow_up,
+    brandsIdentified: row.brands_identified || {},
     reward: mapReward(row)
   };
 }
@@ -107,7 +120,7 @@ function getActivitySelectColumns() {
           shoreline_type, tide_state, cleaned_before, debris_cigarette_butts, debris_food_wrappers, debris_bottle_caps,
           debris_fishing_line, debris_straws, debris_bottles, microplastics, bulk_items, species_sighted, condition,
           habitat_stress, hazards_medical, hazards_chemical, hazards_unstable, instrument, time_spent, second_verifier,
-          disposal_method, follow_up`;
+          disposal_method, follow_up, brands_identified`;
 }
 
 export async function listActivities(statusFilter = null) {
@@ -167,11 +180,11 @@ export async function createActivity(payload) {
       shoreline_type, tide_state, cleaned_before, debris_cigarette_butts, debris_food_wrappers, debris_bottle_caps,
       debris_fishing_line, debris_straws, debris_bottles, microplastics, bulk_items, species_sighted, condition,
       habitat_stress, hazards_medical, hazards_chemical, hazards_unstable, instrument, time_spent, second_verifier,
-      disposal_method, follow_up
+      disposal_method, follow_up, brands_identified
      ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8,
       $9, $10, $11, $12, $13, $14, $15, $16, 'pending',
-      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38
+      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39
      )
      RETURNING ${getActivitySelectColumns()}`,
     [
@@ -196,7 +209,8 @@ export async function createActivity(payload) {
       normalizeNumber(payload.debrisFishingLine), normalizeNumber(payload.debrisStraws), normalizeNumber(payload.debrisBottles),
       payload.microplastics, payload.bulkItems, payload.speciesSighted, payload.condition, payload.habitatStress,
       Boolean(payload.hazardsMedical), Boolean(payload.hazardsChemical), Boolean(payload.hazardsUnstable),
-      payload.instrument, normalizeNumber(payload.timeSpent), payload.secondVerifier, payload.disposalMethod, Boolean(payload.followUp)
+      payload.instrument, normalizeNumber(payload.timeSpent), payload.secondVerifier, payload.disposalMethod, Boolean(payload.followUp),
+      normalizeBrandsIdentified(payload.brandsIdentified)
     ]
   );
 
@@ -251,6 +265,7 @@ export async function updateActivity(id, payload) {
   addField('second_verifier', payload.secondVerifier);
   addField('disposal_method', payload.disposalMethod);
   addField('follow_up', payload.followUp !== undefined ? Boolean(payload.followUp) : undefined);
+  addField('brands_identified', payload.brandsIdentified !== undefined ? normalizeBrandsIdentified(payload.brandsIdentified) : undefined);
 
   if (updates.length === 0) {
     return getActivityById(id);
@@ -560,6 +575,8 @@ export async function getContributorInsights(contributorId) {
     [contributorId]
   );
 
+  const brandFrequency = await getBrandFrequency(contributorId);
+
   const locRows = locationsResult.rows.map(r => ({
     location: r.location?.trim() || 'Unspecified',
     kg: Number(r.kg) || 0,
@@ -683,7 +700,74 @@ export async function getContributorInsights(contributorId) {
       followUpList,
     },
     monitoredSites,
+    brandFrequency,
   };
+}
+
+/**
+ * getBrandFrequency — backs the "top brands" section of the debris density
+ * card on the contributor overview page. Walks brands_identified (keyed by
+ * debris material, each value an array of {name, count} entries) with
+ * jsonb_each + jsonb_array_elements to flatten it into one row per
+ * material/brand pair, then rolls that up in JS into an overall ranking
+ * (brand name trimmed/lowercased for grouping, summed across materials) and
+ * a per-material breakdown, in case the dashboard wants to show which
+ * brands show up in a specific debris category (e.g. fishing line/nets).
+ * Scoped to this contributor's approved activities only.
+ */
+export async function getBrandFrequency(contributorId) {
+  const result = await query(
+    `SELECT
+       material.key AS material,
+       TRIM(LOWER(brand->>'name')) AS brand_key,
+       MIN(NULLIF(TRIM(brand->>'name'), '')) AS brand_label,
+       COALESCE(SUM(
+         CASE WHEN (brand->>'count') ~ '^\\d+(\\.\\d+)?$' THEN (brand->>'count')::numeric ELSE 0 END
+       ), 0) AS total_count
+     FROM activities a
+     CROSS JOIN LATERAL jsonb_each(COALESCE(a.brands_identified, '{}'::jsonb)) AS material(key, value)
+     CROSS JOIN LATERAL jsonb_array_elements(
+       CASE WHEN jsonb_typeof(material.value) = 'array' THEN material.value ELSE '[]'::jsonb END
+     ) AS brand
+     WHERE a.contributor_id = $1
+       AND a.status = 'approved'
+       AND jsonb_typeof(a.brands_identified) = 'object'
+       AND brand ? 'name'
+       AND NULLIF(TRIM(brand->>'name'), '') IS NOT NULL
+     GROUP BY material.key, TRIM(LOWER(brand->>'name'))
+     ORDER BY material.key, total_count DESC`,
+    [contributorId]
+  );
+
+  const rows = result.rows.map((r) => ({
+    material: r.material,
+    key: r.brand_key,
+    label: r.brand_label,
+    count: Number(r.total_count) || 0,
+  }));
+
+  const overallMap = new Map();
+  rows.forEach(({ key, label, count }) => {
+    const existing = overallMap.get(key);
+    if (existing) {
+      existing.count += count;
+    } else {
+      overallMap.set(key, { key, label, count });
+    }
+  });
+  const topBrands = [...overallMap.values()].sort((a, b) => b.count - a.count);
+
+  const byCategoryMap = new Map();
+  rows.forEach(({ material, key, label, count }) => {
+    if (!byCategoryMap.has(material)) byCategoryMap.set(material, []);
+    byCategoryMap.get(material).push({ key, label, count });
+  });
+  const byCategory = [...byCategoryMap.entries()].map(([material, brands]) => ({
+    material,
+    brands: brands.sort((a, b) => b.count - a.count),
+  }));
+
+  return { topBrands, byCategory };
 }
 
 /**

@@ -152,6 +152,7 @@ ALTER TABLE activities ADD COLUMN IF NOT EXISTS second_verifier TEXT;
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS disposal_method TEXT;
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS follow_up BOOLEAN DEFAULT FALSE;
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS reviewed_by TEXT REFERENCES users(id);
+ALTER TABLE activities ADD COLUMN IF NOT EXISTS brands_identified JSONB DEFAULT '{}'::jsonb;
 
 -- On-chain proof columns (safe to re-run)
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS onchain_tx_hash     TEXT;
