@@ -232,7 +232,48 @@ async function verifyEmail(req, res) {
 
     const user = await findUserByEmailVerificationToken(token);
     if (!user) {
-      return res.status(400).json({ ok: false, message: 'Invalid or expired verification token' });
+      return res.status(400).send(`
+        <html>
+          <head>
+            <title>Already Verified - BlueMind</title>
+          </head>
+          <body style="margin:0; padding:0; background-color:#0a1e33; font-family:Arial, Helvetica, sans-serif;">
+            <div style="max-width:600px; margin:0 auto; padding:60px 20px; ">
+              <div style="background:rgba(15,42,64,0.55); border:1px solid rgba(148,197,214,0.18); border-radius:20px; padding:50px 40px; text-align:center; box-shadow:0 8px 30px rgba(0,0,0,0.35);">
+                <!-- Brand -->
+                <table role="presentation" align="center" style="margin:0 auto 30px;">
+                  <tr>
+                    <td style="vertical-align:middle; padding-right:8px;">
+                      <span style="display:inline-block; width:26px; height:26px; border:1.5px solid #7dd3c0;
+                        border-radius:50%; color:#7dd3c0; font-size:14px; line-height:23px; text-align:center;
+                      ">🌐</span>
+                    </td>
+                    <td style="vertical-align:middle;">
+                      <span style="color:#f1f5f9; font-size:18px; font-weight:700; letter-spacing:0.3px;
+                      ">BlueMind</span>
+                    </td>
+                  </tr>
+                </table>
+
+                <!-- Info Icon -->
+                <div style="width:64px; height:64px; margin:0 auto 26px; border-radius:50%;
+                  background:linear-gradient(135deg, rgba(96,165,250,0.25), rgba(59,130,246,0.1));
+                  border:1px solid rgba(96,165,250,0.4); line-height:64px; font-size:28px; color:#60a5fa; ">
+                  ℹ
+                </div>
+
+                <!-- Message -->
+                <h1 style=" margin:0 0 12px; font-size:30px; font-weight:600; color:#f8fafc; ">
+                  Email <span style="font-style:italic; font-weight:400; color:#60a5fa;">already verified.</span>
+                </h1>
+                <p style="margin:0 auto 34px; max-width:420px; font-size:15px; line-height:1.6; color:#94a3b8;">
+                  Looks like this email was already confirmed. Your <strong style="color:#cbd5e1;">BlueMind</strong> account is active — no further action is needed.
+                </p>
+              </div>
+            </div>
+          </body>
+          </html>
+        `);
     }
 
     await markUserEmailVerified(user.id);
