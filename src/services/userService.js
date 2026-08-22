@@ -217,6 +217,19 @@ export async function findUserByEmailVerificationToken(token) {
   return mapUserRow(result.rows[0]);
 }
 
+export async function markUserEmailVerified(id) {
+  await ensureUserVerificationColumns();
+  const result = await query(
+    `UPDATE users
+     SET email_verified_at = NOW()
+     WHERE id = $1
+     RETURNING id`,
+    [id]
+  );
+
+  return mapUserRow(result.rows[0]);
+}
+
 export async function deleteUserById(id) {
   await ensureUserVerificationColumns();
   const result = await query(

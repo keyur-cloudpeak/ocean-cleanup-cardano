@@ -14,40 +14,78 @@ function buildVerificationEmail({ firstName, verificationUrl }) {
   ].join('\n');
 
   const html = `
-    <div style="margin:0; padding:0; background-color:#f3f7f5; font-family:Arial,Helvetica,sans-serif; color:#1f2937;"> <div style="max-width:600px; margin:0 auto; padding:40px 20px;">
-      <div style="background:#ffffff; border-radius:12px; padding:40px 35px; box-shadow:0 2px 10px rgba(0,0,0,0.06);">
-        <div style="text-align:center; margin-bottom:30px;">
-          <h1 style="margin:0; color:#0f766e; font-size:28px; font-weight:700;">
-            BlueMind
-          </h1>
-          <p style="margin:8px 0 0; color:#6b7280; font-size:14px;">
-            Making a cleaner ocean, together.
+    <div style="
+      margin:0;
+      padding:0;
+      background-color:#0a1e33;
+      font-family:Arial,Helvetica,sans-serif;
+    ">
+      <div style="max-width:600px; margin:0 auto; padding:60px 20px;">
+        <div style="
+          background:rgba(15,42,64,0.55);
+          border:1px solid rgba(148,197,214,0.18);
+          border-radius:20px;
+          padding:45px 40px;
+          box-shadow:0 8px 30px rgba(0,0,0,0.35);
+        ">
+          <div style="text-align:center; margin-bottom:30px;">
+            <table role="presentation" align="center" style="margin:0 auto;">
+              <tr>
+                <td style="vertical-align:middle; padding-right:8px;">
+                  <span style="
+                    display:inline-block;
+                    width:26px;
+                    height:26px;
+                    border:1.5px solid #7dd3c0;
+                    border-radius:50%;
+                    color:#7dd3c0;
+                    font-size:14px;
+                    line-height:23px;
+                    text-align:center;
+                  ">🌐</span>
+                </td>
+                <td style="vertical-align:middle;">
+                  <span style="color:#f1f5f9; font-size:20px; font-weight:700; letter-spacing:0.3px;">
+                    BlueMind
+                  </span>
+                </td>
+              </tr>
+            </table>
+            <p style="margin:8px 0 0; color:#94a3b8; font-size:14px;">
+              Making a cleaner ocean, together.
+            </p>
+          </div>
+          <h2 style="margin:0 0 16px; font-size:22px; color:#f8fafc; font-weight:600;">
+            ${greeting}
+          </h2>
+          <p style="font-size:16px; line-height:1.6; margin:0 0 16px; color:#cbd5e1;">
+            Thanks for joining <strong style="color:#f1f5f9;">BlueMind</strong>! We're excited to have you as part of our community.
           </p>
-        </div>
-        <h2 style="margin:0 0 16px; font-size:22px; color:#111827;">
-          ${greeting}
-        </h2>
-        <p style="font-size:16px; line-height:1.6; margin:0 0 16px;">
-          Thanks for joining <strong>BlueMind</strong>! We're excited to have you as part of our community.
-        </p>
-        <p style="font-size:16px; line-height:1.6; margin:0 0 24px;">
-          To activate your account and get started, please verify your email address by clicking the button below.
-        </p>
-        <div style="text-align:center; margin:30px 0;">
-          <a
-            href="${verificationUrl}"
-            style="display:inline-block; background:#0f766e; color:#ffffff; text-decoration:none; font-size:16px; font-weight:600; padding:14px 30px; border-radius:8px;"
-          >
-            Verify Account
-          </a>
-        </div>
-        <div style="border-top:1px solid #e5e7eb; padding-top:20px;">
-          <p style="font-size:13px; line-height:1.6; color:#6b7280; margin:0;">
-            If you didn't create an BlueMind account, you can safely ignore this email. No action is required.
+          <p style="font-size:16px; line-height:1.6; margin:0 0 24px; color:#cbd5e1;">
+            To activate your account and get started, please verify your email address by clicking the button below.
           </p>
+          <div style="text-align:center; margin:30px 0;">
+            <table role="presentation" align="center" style="margin:0 auto;">
+              <tr>
+                <td style="background:linear-gradient(90deg, #2dd4bf, #5eead4); border-radius:10px;">
+                  <a
+                    href="${verificationUrl}"
+                    style="display:inline-block; color:#062a29; text-decoration:none; font-size:15px; font-weight:700; letter-spacing:0.3px; padding:14px 34px;"
+                  >
+                    Verify Account &nbsp;&#8594;
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </div>
+          <div style="border-top:1px solid rgba(148,163,184,0.2); padding-top:20px;">
+            <p style="font-size:13px; line-height:1.6; color:#94a3b8; margin:0;">
+              If you didn't create a BlueMind account, you can safely ignore this email. No action is required.
+            </p>
+          </div>
         </div>
       </div>
-      </div> </div>
+    </div>
   `;
 
   return { subject: 'Verify your BlueMind account', text, html };
