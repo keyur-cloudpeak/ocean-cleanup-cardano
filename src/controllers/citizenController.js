@@ -1,20 +1,13 @@
 import { getCitizenStats, getCitizenLeaderboard, getCitizenFeed, getCitizenActivities } from '../services/citizenService.js';
+import asyncHandler from '../middleware/asyncHandler.js';
 
 /**
  * GET /api/citizen/stats
  * Returns the authenticated citizen's personal stats, tier, badges, and progress.
  */
 async function getStats(req, res) {
-  try {
-    const citizenId = req.user?.id;
-    if (!citizenId) return res.status(401).json({ ok: false, error: 'Unauthorized' });
-
-    const stats = await getCitizenStats(citizenId);
-    res.json({ ok: true, stats });
-  } catch (err) {
-    console.error('Citizen stats error:', err);
-    res.status(500).json({ ok: false, error: 'Failed to compute citizen stats' });
-  }
+  const stats = await getCitizenStats(req.user.id);
+  res.json({ ok: true, stats });
 }
 
 /**
@@ -22,14 +15,8 @@ async function getStats(req, res) {
  * Returns the current week's leaderboard (top 10 + caller's own row if outside top 10).
  */
 async function getLeaderboard(req, res) {
-  try {
-    const citizenId = req.user?.id;
-    const data = await getCitizenLeaderboard(citizenId);
-    res.json({ ok: true, ...data });
-  } catch (err) {
-    console.error('Citizen leaderboard error:', err);
-    res.status(500).json({ ok: false, error: 'Failed to load leaderboard' });
-  }
+  const data = await getCitizenLeaderboard(req.user?.id);
+  res.json({ ok: true, ...data });
 }
 
 /**
@@ -37,14 +24,9 @@ async function getLeaderboard(req, res) {
  * Returns recent community activity feed (public — no auth needed, auth adds "isMe" flag).
  */
 async function getFeed(req, res) {
-  try {
-    const limit = Math.min(Number(req.query.limit) || 15, 50);
-    const feed = await getCitizenFeed(limit);
-    res.json({ ok: true, feed });
-  } catch (err) {
-    console.error('Citizen feed error:', err);
-    res.status(500).json({ ok: false, error: 'Failed to load feed' });
-  }
+  const limit = Math.min(Number(req.query.limit) || 15, 50);
+  const feed = await getCitizenFeed(limit);
+  res.json({ ok: true, feed });
 }
 
 /**
@@ -52,16 +34,13 @@ async function getFeed(req, res) {
  * Returns the authenticated citizen's activities
  */
 async function getActivities(req, res) {
-  try {
-    const citizenId = req.user?.id;
-    if (!citizenId) return res.status(401).json({ ok: false, error: 'Unauthorized' });
-
-    const activities = await getCitizenActivities(citizenId);
-    res.json({ ok: true, activities });
-  } catch (err) {
-    console.error('Citizen activities error:', err);
-    res.status(500).json({ ok: false, error: 'Failed to load citizen activities' });
-  }
+  const activities = await getCitizenActivities(req.user.id);
+  res.json({ ok: true, activities });
 }
 
-export default { getStats, getLeaderboard, getFeed, getActivities };
+export default {
+  getStats: asyncHandler(getStats),
+  getLeaderboard: asyncHandler(getLeaderboard),
+  getFeed: asyncHandler(getFeed),
+  getActivities: asyncHandler(getActivities)
+};

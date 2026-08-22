@@ -15,6 +15,18 @@ import {
   markUserEmailVerified,
   deleteUserById
 } from '../services/userService.js';
+import asyncHandler from '../middleware/asyncHandler.js';
+
+// NOTE on this controller's catch blocks: unlike the other controllers,
+// every response here (success and error) uses a `message` field, not
+// `error`. The shared errorHandler.js (wired up via asyncHandler) responds
+// with `{ ok:false, error: ... }`. Converting these generic catch-all
+// blocks to throw-and-let-asyncHandler-catch would silently rename the
+// JSON field from `message` to `error` for every 500 this controller
+// returns, which is a response-shape regression, not a pure refactor.
+// So the catch blocks below are left as-is; only the handlers are wrapped
+// with asyncHandler (as a backstop for any error path that currently
+// isn't caught at all, e.g. a synchronous throw before the try block).
 
 function normalizeUsername(value) {
   return String(value || '').trim().toLowerCase();
@@ -396,4 +408,12 @@ async function updateProfile(req, res) {
   }
 }
 
-export default { signup, checkEmailAvailability, login, verify, verifyEmail, logout, updateProfile };
+export default {
+  signup: asyncHandler(signup),
+  checkEmailAvailability: asyncHandler(checkEmailAvailability),
+  login: asyncHandler(login),
+  verify: asyncHandler(verify),
+  verifyEmail: asyncHandler(verifyEmail),
+  logout: asyncHandler(logout),
+  updateProfile: asyncHandler(updateProfile)
+};

@@ -25,3 +25,13 @@ export function authorizeRoles(...roles) {
     next();
   };
 }
+
+// Guards routes that need a resolved req.user.id beyond just "is this token
+// valid" (authenticate already covers that) — used where a handler would
+// otherwise repeat `if (!req.user?.id) return res.status(401)...` itself.
+export function requireAuthenticatedUser(req, res, next) {
+  if (!req.user?.id) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  next();
+}

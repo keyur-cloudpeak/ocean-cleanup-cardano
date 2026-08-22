@@ -1,9 +1,14 @@
 import { query } from '../config/connection.js';
+import { toNumber, toTrimmedLower, toJsonOrNull } from '../utils/normalize.js';
 
 const ALLOWED_STATUSES = new Set(['pending', 'rejected', 'approved']);
 
+// Contributor's own approved activities — repeated across most of the
+// per-contributor stat/insight queries below.
+const APPROVED_FOR_CONTRIBUTOR = "contributor_id = $1 AND status = 'approved'";
+
 function normalizeStatus(value) {
-  return String(value || '').trim().toLowerCase();
+  return toTrimmedLower(value);
 }
 
 function normalizeStatusFilter(value) {
@@ -12,24 +17,11 @@ function normalizeStatusFilter(value) {
 }
 
 function normalizeNumber(value) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-
-  const parsed = Number(value);
-  return Number.isNaN(parsed) ? null : parsed;
+  return toNumber(value);
 }
 
 function normalizeBrandsIdentified(value) {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value);
-    } catch {
-      return null;
-    }
-  }
-  return typeof value === 'object' ? value : null;
+  return toJsonOrNull(value);
 }
 
 function mapReward(row) {
@@ -446,7 +438,7 @@ export async function getContributorInsights(contributorId) {
             COALESCE(SUM(quantity), 0) AS kg,
             COUNT(*)::int AS count
      FROM activities
-     WHERE contributor_id = $1 AND status = 'approved'
+     WHERE ${APPROVED_FOR_CONTRIBUTOR}
      GROUP BY split_part(location, ',', 1)
      ORDER BY kg DESC
      LIMIT 5`,
@@ -457,7 +449,7 @@ export async function getContributorInsights(contributorId) {
     `SELECT LOWER(COALESCE(NULLIF(TRIM(disposal_method), ''), 'not specified')) AS key,
             COALESCE(SUM(quantity), 0) AS kg
      FROM activities
-     WHERE contributor_id = $1 AND status = 'approved'
+     WHERE ${APPROVED_FOR_CONTRIBUTOR}
      GROUP BY 1
      ORDER BY kg DESC`,
     [contributorId]
@@ -483,7 +475,7 @@ export async function getContributorInsights(contributorId) {
             COALESCE(NULLIF(TRIM(tide_state), ''), 'Unspecified') AS tide_state,
             COUNT(*)::int AS count
      FROM activities
-     WHERE contributor_id = $1 AND status = 'approved'
+     WHERE ${APPROVED_FOR_CONTRIBUTOR}
      GROUP BY 1, 2
      ORDER BY count DESC`,
     [contributorId]
@@ -505,14 +497,14 @@ export async function getContributorInsights(contributorId) {
             COALESCE(SUM(debris_straws), 0)          AS straws,
             COALESCE(SUM(debris_bottles), 0)         AS bottles
      FROM activities
-     WHERE contributor_id = $1 AND status = 'approved'`,
+     WHERE ${APPROVED_FOR_CONTRIBUTOR}`,
     [contributorId]
   );
 
   const microplasticsResult = await query(
     `SELECT TRIM(LOWER(microplastics)) AS key, COUNT(*)::int AS count
      FROM activities
-     WHERE contributor_id = $1 AND status = 'approved'
+     WHERE ${APPROVED_FOR_CONTRIBUTOR}
        AND microplastics IS NOT NULL AND TRIM(microplastics) != ''
        AND TRIM(LOWER(microplastics)) != 'none observed'
      GROUP BY 1
@@ -523,7 +515,7 @@ export async function getContributorInsights(contributorId) {
   const bulkItemsResult = await query(
     `SELECT bulk_items, location, submitted_at
      FROM activities
-     WHERE contributor_id = $1 AND status = 'approved'
+     WHERE ${APPROVED_FOR_CONTRIBUTOR}
        AND bulk_items IS NOT NULL AND TRIM(bulk_items) != ''
      ORDER BY submitted_at DESC
      LIMIT 10`,
@@ -533,7 +525,7 @@ export async function getContributorInsights(contributorId) {
   const habitatStressResult = await query(
     `SELECT LOWER(TRIM(habitat_stress)) AS key, MIN(TRIM(habitat_stress)) AS label, COUNT(*)::int AS count
      FROM activities
-     WHERE contributor_id = $1 AND status = 'approved'
+     WHERE ${APPROVED_FOR_CONTRIBUTOR}
        AND habitat_stress IS NOT NULL AND TRIM(habitat_stress) != ''
      GROUP BY 1
      ORDER BY count DESC
@@ -544,7 +536,7 @@ export async function getContributorInsights(contributorId) {
   const speciesObservationsResult = await query(
     `SELECT LOWER(TRIM(species_sighted)) AS key, MIN(TRIM(species_sighted)) AS label, COUNT(*)::int AS count
      FROM activities
-     WHERE contributor_id = $1 AND status = 'approved'
+     WHERE ${APPROVED_FOR_CONTRIBUTOR}
        AND species_sighted IS NOT NULL AND TRIM(species_sighted) != ''
      GROUP BY 1
      ORDER BY count DESC
@@ -556,14 +548,14 @@ export async function getContributorInsights(contributorId) {
     `SELECT COALESCE(SUM(time_spent), 0) AS total_hours,
             COALESCE(SUM(quantity), 0)   AS total_kg
      FROM activities
-     WHERE contributor_id = $1 AND status = 'approved' AND time_spent IS NOT NULL`,
+     WHERE ${APPROVED_FOR_CONTRIBUTOR} AND time_spent IS NOT NULL`,
     [contributorId]
   );
 
   const instrumentsResult = await query(
     `SELECT LOWER(TRIM(instrument)) AS key, MIN(TRIM(instrument)) AS label, COUNT(*)::int AS count
      FROM activities
-     WHERE contributor_id = $1 AND status = 'approved'
+     WHERE ${APPROVED_FOR_CONTRIBUTOR}
        AND instrument IS NOT NULL AND TRIM(instrument) != ''
      GROUP BY 1
      ORDER BY count DESC`,
@@ -590,7 +582,7 @@ export async function getContributorInsights(contributorId) {
   const siteVisitsResult = await query(
     `SELECT split_part(location, ',', 1) AS location, quantity, submitted_at, cleaned_before
      FROM activities
-     WHERE contributor_id = $1 AND status = 'approved'
+     WHERE ${APPROVED_FOR_CONTRIBUTOR}
      ORDER BY submitted_at ASC`,
     [contributorId]
   );

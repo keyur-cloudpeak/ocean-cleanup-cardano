@@ -1,12 +1,13 @@
 import crypto from 'crypto';
 import { query } from '../config/connection.js';
+import { toTrimmedLower } from '../utils/normalize.js';
 
 function normalizeUsername(username) {
-  return String(username || '').trim().toLowerCase();
+  return toTrimmedLower(username);
 }
 
 function normalizeEmail(email) {
-  return String(email || '').trim().toLowerCase();
+  return toTrimmedLower(email);
 }
 
 async function ensureUserVerificationColumns() {

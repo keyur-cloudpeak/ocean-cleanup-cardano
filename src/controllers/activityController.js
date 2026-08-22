@@ -12,6 +12,7 @@ import { recordActivityOnChain, getActivityProof } from '../services/onchainProo
 import { recordActivityEvent } from '../services/activityEventService.js';
 import { awardApprovalPoints } from '../services/rewardLedgerService.js';
 import { fetchWeatherContext } from '../services/weatherService.js';
+import asyncHandler from '../middleware/asyncHandler.js';
 
 // Fire-and-forget: looks up historical weather for the activity's site/date
 // and patches it onto the row once it resolves. Never awaited by the
@@ -69,22 +70,17 @@ async function uploadMultipleBase64(dataUris) {
 }
 
 async function list(req, res) {
-  try {
-    const { activities, filters } = await listActivities(req.query.status);
+  const { activities, filters } = await listActivities(req.query.status);
 
-    res.json({
-      ok: true,
-      activities,
-      filters
-    });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: 'Failed to read activities' });
-  }
+  res.json({
+    ok: true,
+    activities,
+    filters
+  });
 }
 
 async function create(req, res) {
-  try {
-    const {
+  const {
       category,
       location,
       quantity,
@@ -179,28 +175,19 @@ async function create(req, res) {
     }
 
     res.status(201).json({ ok: true, activity });
-  } catch (error) {
-    console.error('Error creating activity:', error);
-    res.status(500).json({ ok: false, error: error.message || 'Failed to create activity' });
-  }
 }
 
 async function getById(req, res) {
-  try {
-    const activity = await getActivityById(req.params.id);
-    if (!activity) {
-      return res.status(404).json({ ok: false, error: 'Activity not found' });
-    }
-
-    res.json({ ok: true, activity });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: 'Failed to retrieve activity' });
+  const activity = await getActivityById(req.params.id);
+  if (!activity) {
+    return res.status(404).json({ ok: false, error: 'Activity not found' });
   }
+
+  res.json({ ok: true, activity });
 }
 
 async function update(req, res) {
-  try {
-    const existing = await getActivityById(req.params.id);
+  const existing = await getActivityById(req.params.id);
     if (!existing) {
       return res.status(404).json({ ok: false, error: 'Activity not found' });
     }
@@ -284,15 +271,10 @@ async function update(req, res) {
     }
 
     res.json({ ok: true, activity });
-  } catch (error) {
-    console.error('Error updating activity:', error);
-    res.status(500).json({ ok: false, error: error.message || 'Failed to update activity' });
-  }
 }
 
 async function review(req, res) {
-  try {
-    const existing = await getActivityById(req.params.id);
+  const existing = await getActivityById(req.params.id);
     if (!existing) {
       return res.status(404).json({ ok: false, error: 'Activity not found' });
     }
@@ -334,25 +316,20 @@ async function review(req, res) {
     }
 
     res.json({ ok: true, activity });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: 'Failed to review activity' });
-  }
 }
 
 async function remove(req, res) {
-  try {
-    const deleted = await deleteActivity(req.params.id);
-    if (!deleted) {
-      return res.status(404).json({ ok: false, error: 'Activity not found' });
-    }
-
-    res.json({ ok: true, message: 'Activity deleted successfully' });
-  } catch (error) {
-    console.error('Delete activity error:', error);
-    res.status(500).json({ ok: false, error: 'Failed to delete activity' });
+  const deleted = await deleteActivity(req.params.id);
+  if (!deleted) {
+    return res.status(404).json({ ok: false, error: 'Activity not found' });
   }
+
+  res.json({ ok: true, message: 'Activity deleted successfully' });
 }
 
+// Not routed through asyncHandler's throw path: the catch block does
+// meaningful business-logic dispatch (distinguishing a "not found" error
+// into a 404) alongside the generic 500 fallback, so it stays as-is.
 async function proof(req, res) {
   try {
     const proofData = await getActivityProof(req.params.id);
@@ -366,4 +343,12 @@ async function proof(req, res) {
   }
 }
 
-export default { list, create, getById, update, review, remove, proof };
+export default {
+  list: asyncHandler(list),
+  create: asyncHandler(create),
+  getById: asyncHandler(getById),
+  update: asyncHandler(update),
+  review: asyncHandler(review),
+  remove: asyncHandler(remove),
+  proof: asyncHandler(proof)
+};

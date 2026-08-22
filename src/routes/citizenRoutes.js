@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import citizenController from '../controllers/citizenController.js';
-import { authenticate, authorizeRoles } from '../middleware/authMiddleware.js';
+import { authenticate, authorizeRoles, requireAuthenticatedUser } from '../middleware/authMiddleware.js';
 
 const router = Router();
 
 // GET /api/citizen/stats — requires citizen or admin auth
-router.get('/stats', authenticate, authorizeRoles('citizen', 'admin'), citizenController.getStats);
+router.get('/stats', authenticate, authorizeRoles('citizen', 'admin'), requireAuthenticatedUser, citizenController.getStats);
 
 // GET /api/citizen/leaderboard — requires auth (any role can view)
 router.get('/leaderboard', authenticate, citizenController.getLeaderboard);
@@ -14,6 +14,6 @@ router.get('/leaderboard', authenticate, citizenController.getLeaderboard);
 router.get('/feed', citizenController.getFeed);
 
 // GET /api/citizen/activities — requires citizen or admin auth
-router.get('/activities', authenticate, authorizeRoles('citizen'), citizenController.getActivities);
+router.get('/activities', authenticate, authorizeRoles('citizen'), requireAuthenticatedUser, citizenController.getActivities);
 
 export default router;
