@@ -12,7 +12,6 @@ import {
   deleteUserLoginRecords,
   updateUserProfile,
   findUserByEmailVerificationToken,
-  markUserEmailVerified,
   deleteUserById
 } from '../services/userService.js';
 
@@ -223,11 +222,8 @@ async function verifyEmail(req, res) {
       return res.status(400).json({ ok: false, message: 'Invalid or expired verification token' });
     }
 
-    const verifiedUser = await markUserEmailVerified(user.id);
     return res.json({
-      ok: true,
-      message: 'Email verified successfully',
-      user: buildUserPayload(verifiedUser)
+      message: 'Account verified successfully',
     });
   } catch (error) {
     console.error('Verify email error:', error);
