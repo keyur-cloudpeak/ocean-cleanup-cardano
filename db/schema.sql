@@ -123,7 +123,9 @@ CREATE TABLE IF NOT EXISTS activities (
     status              activity_status NOT NULL DEFAULT 'pending',
     review_note         TEXT NOT NULL DEFAULT '',
     reviewed_at         TIMESTAMPTZ,
-    reviewed_by         TEXT REFERENCES users(id),
+    -- Not FK-constrained: a reviewer can be a verifier (in `users`) or an
+    -- admin (in the separate `admins` table). This column is audit-only.
+    reviewed_by         TEXT,
     reward_id           TEXT,
     reward_tx_hash      TEXT,
     reward_amount       NUMERIC(18, 2),
@@ -198,7 +200,8 @@ ALTER TABLE activities ADD COLUMN IF NOT EXISTS time_spent NUMERIC;
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS second_verifier TEXT;
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS disposal_method TEXT;
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS follow_up BOOLEAN DEFAULT FALSE;
-ALTER TABLE activities ADD COLUMN IF NOT EXISTS reviewed_by TEXT REFERENCES users(id);
+ALTER TABLE activities ADD COLUMN IF NOT EXISTS reviewed_by TEXT;
+ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_reviewed_by_fkey;
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS brands_identified JSONB DEFAULT '{}'::jsonb;
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS survey_length_m NUMERIC(10, 2);
 ALTER TABLE activities ADD COLUMN IF NOT EXISTS survey_area_sqm NUMERIC(10, 2);
