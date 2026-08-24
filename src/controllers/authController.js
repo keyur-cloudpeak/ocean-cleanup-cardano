@@ -361,27 +361,10 @@ async function login(req, res) {
       return res.status(400).json({ ok: false, message: 'Username and password are required' });
     }
 
-    // Admins live in a dedicated table rather than users. An email invited
-    // as admin always authenticates against admins, so check there first.
-    const admin = await findAdminByEmail(username);
-    if (admin) {
-      if (admin.active === false) {
-        return res.status(403).json({ ok: false, message: 'Account is inactive' });
-      }
-
-      if (!admin.password) {
-        return res.status(403).json({ ok: false, message: 'Please set your password using the invite link sent to your email' });
-      }
-
-      const isValidAdminPassword = await bcrypt.compare(password, admin.password);
-      if (!isValidAdminPassword) {
-        return res.status(401).json({ ok: false, message: 'Invalid credentials' });
-      }
-
-      const adminToken = jwt.sign({ id: admin.id, role: 'admin' }, env.jwtSecret, { expiresIn: '24h' });
-      return res.json({ ok: true, token: adminToken, user: buildAdminPayload(admin) });
-    }
-
+    // Admins live in a dedicated table with their own login endpoint
+    // (POST /api/auth/admin/login) — this endpoint only ever resolves
+    // against users, so an email that also has an admin invite doesn't
+    // collide with (or block) that same email's users-table account.
     // The clients label this field as Email, while older accounts may still
     // sign in with their username. Support both identifiers during login.
     const user = await findUserByUsername(username) || await findUserByEmail(username);
@@ -708,6 +691,40 @@ async function completePasswordReset(req, res) {
   }
 }
 
+async function adminLogin(req, res) {
+  try {
+    const email = normalizeEmail(req.body.username || req.body.email);
+    const password = String(req.body.password || '');
+    if (!email || !password) {
+      return res.status(400).json({ ok: false, message: 'Email and password are required' });
+    }
+
+    const admin = await findAdminByEmail(email);
+    if (!admin) {
+      return res.status(401).json({ ok: false, message: 'Invalid credentials' });
+    }
+
+    if (admin.active === false) {
+      return res.status(403).json({ ok: false, message: 'Account is inactive' });
+    }
+
+    if (!admin.password) {
+      return res.status(403).json({ ok: false, message: 'Please set your password using the invite link sent to your email' });
+    }
+
+    const isValid = await bcrypt.compare(password, admin.password);
+    if (!isValid) {
+      return res.status(401).json({ ok: false, message: 'Invalid credentials' });
+    }
+
+    const token = jwt.sign({ id: admin.id, role: 'admin' }, env.jwtSecret, { expiresIn: '24h' });
+    res.json({ ok: true, token, user: buildAdminPayload(admin) });
+  } catch (error) {
+    console.error('Admin login error:', error);
+    res.status(500).json({ ok: false, message: 'Internal server error' });
+  }
+}
+
 async function validateInviteToken(req, res) {
   try {
     const token = String(req.query.token || '').trim();
@@ -853,6 +870,7 @@ export default {
   signup: asyncHandler(signup),
   checkEmailAvailability: asyncHandler(checkEmailAvailability),
   login: asyncHandler(login),
+  adminLogin: asyncHandler(adminLogin),
   verify: asyncHandler(verify),
   verifyEmail: asyncHandler(verifyEmail),
   requestPasswordReset: asyncHandler(requestPasswordReset),

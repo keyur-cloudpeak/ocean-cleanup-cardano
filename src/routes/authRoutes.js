@@ -7,6 +7,7 @@ const router = Router();
 router.post('/signup', authController.signup);
 router.get('/email-availability', authController.checkEmailAvailability);
 router.post('/login', authController.login);
+router.post('/admin/login', authController.adminLogin);
 router.post('/forgot-password', authController.requestPasswordReset);
 router.get('/reset-password', authController.renderPasswordResetPage);
 router.post('/reset-password', authController.completePasswordReset);
