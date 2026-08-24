@@ -15,11 +15,12 @@ function mapAdminRow(row) {
     active: row.is_active,
     passwordSet: Boolean(row.password_hash),
     invitedBy: row.invited_by,
+    profileImageUrl: row.profile_image_url,
     createdAt: row.created_at
   };
 }
 
-const SELECT_COLS = `id, first_name, last_name, email, password_hash, is_active, invited_by, created_at`;
+const SELECT_COLS = `id, first_name, last_name, email, password_hash, is_active, invited_by, profile_image_url, created_at`;
 
 export async function listAdmins() {
   const result = await query(
@@ -77,6 +78,22 @@ export async function setAdminPassword(id, passwordHash) {
      WHERE id = $1
      RETURNING ${SELECT_COLS}`,
     [id, passwordHash]
+  );
+  return mapAdminRow(result.rows[0]);
+}
+
+export async function updateAdminProfile(id, data) {
+  const { firstName, lastName, profileImageUrl } = data;
+
+  const result = await query(
+    `UPDATE admins
+     SET
+       first_name        = COALESCE($2, first_name),
+       last_name         = COALESCE($3, last_name),
+       profile_image_url = COALESCE($4, profile_image_url)
+     WHERE id = $1
+     RETURNING ${SELECT_COLS}`,
+    [id, firstName ?? null, lastName ?? null, profileImageUrl ?? null]
   );
   return mapAdminRow(result.rows[0]);
 }

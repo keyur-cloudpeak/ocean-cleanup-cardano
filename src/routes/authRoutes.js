@@ -17,5 +17,6 @@ router.post('/logout', authController.logout);
 router.get('/verify', authController.verify);
 router.get('/verify-email', authController.verifyEmail);
 router.put('/profile', authenticate, authController.updateProfile);
+router.put('/admin/profile', authenticate, authController.updateAdminProfile);
 
 export default router;

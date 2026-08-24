@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS admins (
 );
 
 ALTER TABLE admins DROP CONSTRAINT IF EXISTS admins_invited_by_fkey;
+ALTER TABLE admins ADD COLUMN IF NOT EXISTS profile_image_url TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_admins_invite_token_hash ON admins (invite_token_hash);
 

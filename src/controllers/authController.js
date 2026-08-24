@@ -23,7 +23,8 @@ import {
   findAdminByEmail,
   findAdminById,
   findAdminByInviteToken,
-  setAdminPassword
+  setAdminPassword,
+  updateAdminProfile as updateAdminProfileRecord
 } from '../services/adminService.js';
 import asyncHandler from '../middleware/asyncHandler.js';
 
@@ -866,6 +867,41 @@ async function updateProfile(req, res) {
   }
 }
 
+// Separate from updateProfile: an admin's account lives in the `admins`
+// table, not `users`, so updateUserProfile(decoded.id, ...) would silently
+// no-op (or worse, hit an unrelated users row that reused the same id).
+async function updateAdminProfile(req, res) {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ ok: false, message: 'No token provided' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, env.jwtSecret);
+
+    if (decoded.role !== 'admin') {
+      return res.status(403).json({ ok: false, message: 'Forbidden' });
+    }
+
+    const profileData = {
+      firstName: req.body.firstName,
+      lastName: req.body.lastName,
+      profileImageUrl: req.body.profileImageUrl
+    };
+
+    const admin = await updateAdminProfileRecord(decoded.id, profileData);
+    if (!admin) {
+      return res.status(404).json({ ok: false, message: 'Admin not found' });
+    }
+
+    res.json({ ok: true, user: buildAdminPayload(admin) });
+  } catch (error) {
+    console.error('Update admin profile error:', error);
+    res.status(500).json({ ok: false, message: 'Failed to update profile' });
+  }
+}
+
 export default {
   signup: asyncHandler(signup),
   checkEmailAvailability: asyncHandler(checkEmailAvailability),
@@ -879,5 +915,6 @@ export default {
   validateInviteToken: asyncHandler(validateInviteToken),
   setPassword: asyncHandler(setPassword),
   logout: asyncHandler(logout),
-  updateProfile: asyncHandler(updateProfile)
+  updateProfile: asyncHandler(updateProfile),
+  updateAdminProfile: asyncHandler(updateAdminProfile)
 };
