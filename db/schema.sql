@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS users (
     email_verified_at TIMESTAMPTZ,
     email_verification_token_hash TEXT,
     email_verification_token_expires_at TIMESTAMPTZ,
+    password_reset_token_hash TEXT,
+    password_reset_token_expires_at TIMESTAMPTZ,
     organization_id UUID REFERENCES organizations(org_id),
     job_title       TEXT,
     years_experience TEXT,
@@ -61,9 +63,14 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_image_url TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token_expires_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token_expires_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_users_email_verification_token_hash
     ON users (email_verification_token_hash);
+
+CREATE INDEX IF NOT EXISTS idx_users_password_reset_token_hash
+    ON users (password_reset_token_hash);
 
 UPDATE users
 SET email_verified_at = COALESCE(email_verified_at, created_at)

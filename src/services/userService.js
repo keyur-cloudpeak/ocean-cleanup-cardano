@@ -184,6 +184,20 @@ export async function findUserByEmailVerificationToken(token) {
   return mapUserRow(result.rows[0]);
 }
 
+export async function findUserByPasswordResetToken(token) {
+  const tokenHash = crypto.createHash('sha256').update(String(token || '')).digest('hex');
+  const result = await query(
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at
+     FROM users
+     WHERE password_reset_token_hash = $1
+       AND password_reset_token_expires_at > NOW()
+     LIMIT 1`,
+    [tokenHash]
+  );
+
+  return mapUserRow(result.rows[0]);
+}
+
 export async function markUserEmailVerified(id) {
   const result = await query(
     `UPDATE users
@@ -191,6 +205,46 @@ export async function markUserEmailVerified(id) {
      WHERE id = $1
      RETURNING id`,
     [id]
+  );
+
+  return mapUserRow(result.rows[0]);
+}
+
+export async function setUserPasswordResetToken(id, { tokenHash, expiresAt }) {
+  const result = await query(
+    `UPDATE users
+     SET password_reset_token_hash = $2,
+         password_reset_token_expires_at = $3
+     WHERE id = $1
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at`,
+    [id, tokenHash, expiresAt]
+  );
+
+  return mapUserRow(result.rows[0]);
+}
+
+export async function clearUserPasswordResetToken(id) {
+  const result = await query(
+    `UPDATE users
+     SET password_reset_token_hash = NULL,
+         password_reset_token_expires_at = NULL
+     WHERE id = $1
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at`,
+    [id]
+  );
+
+  return mapUserRow(result.rows[0]);
+}
+
+export async function updateUserPassword(id, passwordHash) {
+  const result = await query(
+    `UPDATE users
+     SET password_hash = $2,
+         password_reset_token_hash = NULL,
+         password_reset_token_expires_at = NULL
+     WHERE id = $1
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at`,
+    [id, passwordHash]
   );
 
   return mapUserRow(result.rows[0]);
