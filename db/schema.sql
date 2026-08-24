@@ -77,6 +77,32 @@ SET email_verified_at = COALESCE(email_verified_at, created_at)
 WHERE role IN ('citizen', 'contributor')
   AND email_verified_at IS NULL;
 
+-- Admins are managed separately from the users table: they are invited by
+-- email (no self-signup, no username) and only exist once someone with
+-- admin access sends an invite. Login for an invited email always resolves
+-- against this table, never against users.
+CREATE TABLE IF NOT EXISTS admins (
+    id                          TEXT PRIMARY KEY,
+    first_name                  TEXT,
+    last_name                   TEXT,
+    email                       TEXT NOT NULL,
+    password_hash               TEXT,
+    is_active                   BOOLEAN NOT NULL DEFAULT TRUE,
+    -- Not FK-constrained: the inviter may be a legacy admin whose account
+    -- still lives in `users` (from before this table existed), not just
+    -- another row in `admins`. This column is audit-only.
+    invited_by                  TEXT,
+    invite_token_hash           TEXT,
+    invite_token_expires_at     TIMESTAMPTZ,
+    password_set_at             TIMESTAMPTZ,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT admins_email_unique UNIQUE (email)
+);
+
+ALTER TABLE admins DROP CONSTRAINT IF EXISTS admins_invited_by_fkey;
+
+CREATE INDEX IF NOT EXISTS idx_admins_invite_token_hash ON admins (invite_token_hash);
+
 CREATE TABLE IF NOT EXISTS activities (
     id                  TEXT PRIMARY KEY,
     category            TEXT NOT NULL,

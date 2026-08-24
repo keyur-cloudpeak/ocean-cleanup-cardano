@@ -19,6 +19,12 @@ import {
   updateUserPassword,
   deleteUserById
 } from '../services/userService.js';
+import {
+  findAdminByEmail,
+  findAdminById,
+  findAdminByInviteToken,
+  setAdminPassword
+} from '../services/adminService.js';
 import asyncHandler from '../middleware/asyncHandler.js';
 
 // NOTE on this controller's catch blocks: unlike the other controllers,
@@ -42,6 +48,17 @@ function normalizeEmail(value) {
 
 function requiresEmailVerification(role) {
   return ['citizen', 'contributor'].includes(String(role || '').trim().toLowerCase());
+}
+
+function buildAdminPayload(admin) {
+  return {
+    id: admin.id,
+    firstName: admin.firstName,
+    lastName: admin.lastName,
+    email: admin.email,
+    role: 'admin',
+    passwordSet: admin.passwordSet
+  };
 }
 
 function buildUserPayload(user) {
@@ -342,6 +359,27 @@ async function login(req, res) {
     const password = String(req.body.password || '');
     if (!username || !password) {
       return res.status(400).json({ ok: false, message: 'Username and password are required' });
+    }
+
+    // Admins live in a dedicated table rather than users. An email invited
+    // as admin always authenticates against admins, so check there first.
+    const admin = await findAdminByEmail(username);
+    if (admin) {
+      if (admin.active === false) {
+        return res.status(403).json({ ok: false, message: 'Account is inactive' });
+      }
+
+      if (!admin.password) {
+        return res.status(403).json({ ok: false, message: 'Please set your password using the invite link sent to your email' });
+      }
+
+      const isValidAdminPassword = await bcrypt.compare(password, admin.password);
+      if (!isValidAdminPassword) {
+        return res.status(401).json({ ok: false, message: 'Invalid credentials' });
+      }
+
+      const adminToken = jwt.sign({ id: admin.id, role: 'admin' }, env.jwtSecret, { expiresIn: '24h' });
+      return res.json({ ok: true, token: adminToken, user: buildAdminPayload(admin) });
     }
 
     // The clients label this field as Email, while older accounts may still
@@ -670,6 +708,62 @@ async function completePasswordReset(req, res) {
   }
 }
 
+async function validateInviteToken(req, res) {
+  try {
+    const token = String(req.query.token || '').trim();
+    if (!token) {
+      return res.status(400).json({ ok: false, message: 'Invite token is required' });
+    }
+
+    const admin = await findAdminByInviteToken(token);
+    if (!admin) {
+      return res.status(400).json({ ok: false, message: 'This invite link is invalid or has expired' });
+    }
+
+    res.json({ ok: true, email: admin.email, firstName: admin.firstName });
+  } catch (error) {
+    console.error('Validate invite token error:', error);
+    res.status(500).json({ ok: false, message: 'Unable to validate invite link' });
+  }
+}
+
+async function setPassword(req, res) {
+  try {
+    const token = String(req.body.token || '').trim();
+    const password = String(req.body.password || '');
+    const confirmPassword = String(req.body.confirmPassword || '');
+
+    if (!token) {
+      return res.status(400).json({ ok: false, message: 'Invite token is required' });
+    }
+
+    const admin = await findAdminByInviteToken(token);
+    if (!admin) {
+      return res.status(400).json({ ok: false, message: 'This invite link is invalid or has expired' });
+    }
+
+    if (!password || !confirmPassword) {
+      return res.status(400).json({ ok: false, message: 'Please enter and confirm your password' });
+    }
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({ ok: false, message: 'Passwords do not match' });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({ ok: false, message: 'Please use at least 8 characters for your password' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await setAdminPassword(admin.id, hashedPassword);
+
+    res.json({ ok: true, message: 'Password set successfully' });
+  } catch (error) {
+    console.error('Set password error:', error);
+    res.status(500).json({ ok: false, message: 'Unable to set password' });
+  }
+}
+
 async function verify(req, res) {
   try {
     const authHeader = req.headers.authorization;
@@ -679,6 +773,15 @@ async function verify(req, res) {
 
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, env.jwtSecret);
+
+    if (decoded.role === 'admin') {
+      const admin = await findAdminById(decoded.id);
+      if (!admin) {
+        return res.status(401).json({ ok: false, message: 'User not found' });
+      }
+      return res.json({ ok: true, user: buildAdminPayload(admin) });
+    }
+
     const user = await findUserById(decoded.id);
 
     if (!user) {
@@ -755,6 +858,8 @@ export default {
   requestPasswordReset: asyncHandler(requestPasswordReset),
   renderPasswordResetPage: asyncHandler(renderPasswordResetPage),
   completePasswordReset: asyncHandler(completePasswordReset),
+  validateInviteToken: asyncHandler(validateInviteToken),
+  setPassword: asyncHandler(setPassword),
   logout: asyncHandler(logout),
   updateProfile: asyncHandler(updateProfile)
 };
