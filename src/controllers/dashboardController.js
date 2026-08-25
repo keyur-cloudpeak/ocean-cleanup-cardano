@@ -1,6 +1,6 @@
 import { getDashboardStats } from '../services/activityService.js';
 import { getUsers, setUserActiveStatus as setUserActiveStatusInService } from '../services/userService.js';
-import { listOrganizations } from '../services/organizationService.js';
+import { listOrganizations, createOrganization } from '../services/organizationService.js';
 import { listNotificationsForRecipient, markNotificationReadById } from '../services/notificationService.js';
 import asyncHandler from '../middleware/asyncHandler.js';
 
@@ -56,6 +56,22 @@ async function getPublicOrganizations(req, res) {
   res.json({ ok: true, organizations });
 }
 
+async function createPublicOrganization(req, res) {
+  const name = (req.body?.name || '').trim();
+  if (!name) {
+    return res.status(400).json({ ok: false, error: 'Organization name is required' });
+  }
+
+  const existing = (await listOrganizations(true))
+    .find((o) => o.name.toLowerCase() === name.toLowerCase());
+  if (existing) {
+    return res.status(200).json({ ok: true, organization: { orgId: existing.orgId, name: existing.name } });
+  }
+
+  const org = await createOrganization({ name, isActive: true });
+  res.status(201).json({ ok: true, organization: { orgId: org.orgId, name: org.name } });
+}
+
 async function getNotifications(req, res) {
   const notifications = await listNotificationsForRecipient('admin', req.user?.id);
   const unreadCount = notifications.filter((item) => !item.isRead).length;
@@ -77,6 +93,7 @@ export default {
   getUserLists: asyncHandler(getUserLists),
   setUserActiveStatus: asyncHandler(setUserActiveStatus),
   getPublicOrganizations: asyncHandler(getPublicOrganizations),
+  createPublicOrganization: asyncHandler(createPublicOrganization),
   getNotifications: asyncHandler(getNotifications),
   markNotificationRead: asyncHandler(markNotificationRead)
 };
