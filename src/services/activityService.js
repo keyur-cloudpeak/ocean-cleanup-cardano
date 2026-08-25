@@ -875,6 +875,7 @@ export async function getDashboardStats() {
        MAX(submitted_at) AS latest_activity_at,
        (SELECT COUNT(*) FROM users WHERE role = 'verifier')::int AS verifier_count,
        (SELECT COUNT(*) FROM users WHERE role = 'contributor')::int AS contributor_count,
+      (SELECT COUNT(*) FROM users WHERE role = 'citizen')::int AS citizen_count,
        (SELECT COALESCE(SUM(amount), 0) FROM reward_ledger) AS impact_credits
      FROM activities`
   );
@@ -897,6 +898,7 @@ export async function getDashboardStats() {
     : 0;
   const verifierCount = Number(row.verifier_count) || 0;
   const contributorCount = Number(row.contributor_count) || 0;
+  const citizenCount = Number(row.citizen_count) || 0;
 
   return {
     totalActivities,
@@ -913,6 +915,7 @@ export async function getDashboardStats() {
     recentActivities,
     latestActivityAt,
     verifierCount,
-    contributorCount
+    contributorCount,
+    citizenCount
   };
 }
