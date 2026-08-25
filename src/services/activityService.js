@@ -717,6 +717,23 @@ export async function getContributorInsights(contributorId) {
 }
 
 /**
+ * getContributorActivities — all activities for a contributor, newest first.
+ * Used by admin-side report pages so admins can inspect the full record set
+ * behind a contributor's overview without relying on the self-service export.
+ */
+export async function getContributorActivities(contributorId) {
+  const result = await query(
+    `SELECT ${getActivitySelectColumns()}
+     FROM activities
+     WHERE contributor_id = $1
+     ORDER BY submitted_at DESC`,
+    [contributorId]
+  );
+
+  return result.rows.map(mapActivityRow);
+}
+
+/**
  * getBrandFrequency — backs the "top brands" section of the debris density
  * card on the contributor overview page. Walks brands_identified (keyed by
  * debris material, each value an array of {name, count} entries) with
