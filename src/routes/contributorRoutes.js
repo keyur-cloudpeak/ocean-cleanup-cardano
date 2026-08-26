@@ -10,6 +10,9 @@ router.get('/stats', authenticate, authorizeRoles('contributor', 'admin'), requi
 // GET /api/contributor/insights — locations, disposal, and wildlife breakdowns
 router.get('/insights', authenticate, authorizeRoles('contributor', 'admin'), requireAuthenticatedUser, contributorController.getInsights);
 
+// GET /api/contributor/impact — the "Your Impact" event-model summary
+router.get('/impact', authenticate, authorizeRoles('contributor', 'admin'), requireAuthenticatedUser, contributorController.getImpact);
+
 // GET /api/contributor/export — PDF field report of the contributor's approved activities
 router.get('/export', authenticate, authorizeRoles('contributor', 'admin'), requireAuthenticatedUser, contributorController.exportReport);
 

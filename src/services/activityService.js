@@ -57,6 +57,7 @@ function mapActivityRow(row) {
     evidenceHash: row.evidence_hash,
     contributorId: row.contributor_id,
     organizationId: row.organization_id,
+    environmentalEventId: row.environmental_event_id,
     imageCid: toArray(row.image_cid),
     imageIpfsUrl: toArray(row.image_ipfs_url),
     imageGatewayUrl: toArray(row.image_gateway_url),
@@ -113,6 +114,7 @@ function makeActivityId() {
 
 function getActivitySelectColumns() {
   return `id, category, location, quantity, volunteers, evidence_hash, contributor_id, organization_id,
+          environmental_event_id,
           image_cid, image_ipfs_url, image_gateway_url, lat, lon, gps, notes,
           submitted_at, status, review_note, reviewed_at, reviewed_by,
           reward_id, reward_tx_hash, reward_amount, reward_token_type, reward_minted_at,
