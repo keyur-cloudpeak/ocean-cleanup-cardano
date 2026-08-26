@@ -313,6 +313,25 @@ export async function reviewActivity(id, status, reviewNote = '', reviewerId = n
 }
 
 export async function deleteActivity(id) {
+  // The environmental-event bridge (spec §26) links this row in both
+  // directions — activities.environmental_event_id forward, and
+  // environmental_events.legacy_activity_id back — and neither FK carries
+  // an ON DELETE clause, so a bare DELETE FROM activities fails as soon as
+  // either side is still linked. reward_ledger is ON DELETE RESTRICT for
+  // the same reason. Clear all three before deleting the activity itself.
+  await query(`UPDATE activities SET environmental_event_id = NULL WHERE id = $1`, [id]);
+
+  const deletedEvents = await query(
+    `DELETE FROM environmental_events WHERE legacy_activity_id = $1 RETURNING contribution_id`,
+    [id]
+  );
+  const contributionIds = [...new Set(deletedEvents.rows.map((r) => r.contribution_id).filter(Boolean))];
+  if (contributionIds.length > 0) {
+    await query(`DELETE FROM contributions WHERE contribution_id = ANY($1::uuid[])`, [contributionIds]);
+  }
+
+  await query(`DELETE FROM reward_ledger WHERE activity_id = $1`, [id]);
+
   const result = await query(
     `DELETE FROM activities
      WHERE id = $1
