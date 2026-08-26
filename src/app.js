@@ -11,6 +11,7 @@ import adminRoutes from './routes/adminRoutes.js';
 import adminReportRoutes from './routes/adminReportRoutes.js';
 import contributorRoutes from './routes/contributorRoutes.js';
 import citizenRoutes from './routes/citizenRoutes.js';
+import aiAnalysisRoutes from './routes/aiAnalysisRoutes.js';
 import errorHandler from './middleware/errorHandler.js';
 
 const app = express();
@@ -32,6 +33,7 @@ app.use('/api/admin/admins', adminRoutes);
 app.use('/api/admin/reports', adminReportRoutes);
 app.use('/api/contributor', contributorRoutes);
 app.use('/api/citizen', citizenRoutes);
+app.use('/api/ai', aiAnalysisRoutes);
 app.use(errorHandler);
 
 export default app;

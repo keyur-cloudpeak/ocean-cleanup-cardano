@@ -58,7 +58,8 @@ function buildAdminPayload(admin) {
     lastName: admin.lastName,
     email: admin.email,
     role: 'admin',
-    passwordSet: admin.passwordSet
+    passwordSet: admin.passwordSet,
+    profileImageUrl: admin.profileImageUrl
   };
 }
 
