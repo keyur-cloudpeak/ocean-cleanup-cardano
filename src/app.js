@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import activityRoutes from './routes/activityRoutes.js';
+import eventRoutes from './routes/eventRoutes.js';
+import aiRoutes from './routes/aiRoutes.js';
 import uploadRoutes from './routes/uploadRoutes.js';
 import dashboardRoutes from './routes/dashboardRoutes.js';
 import authRoutes from './routes/authRoutes.js';
@@ -21,6 +23,8 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'ocean-cleanup-backend' });
 });
 app.use('/api/activities', activityRoutes);
+app.use('/api/events', eventRoutes);
+app.use('/api/ai', aiRoutes);
 app.use('/api/uploads', uploadRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/auth', authRoutes);

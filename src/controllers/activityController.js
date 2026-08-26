@@ -10,8 +10,14 @@ import {
 import { send as sendActivityNotification } from '../services/notificationService.js';
 import { recordActivityOnChain, getActivityProof } from '../services/onchainProofService.js';
 import { recordActivityEvent } from '../services/activityEventService.js';
+import { createEventForActivity, recordReviewOnEvent } from '../services/environmentalEventService.js';
+import { runIntakePipeline } from '../services/verifierService.js';
 import { awardApprovalPoints } from '../services/rewardLedgerService.js';
 import { fetchWeatherContext } from '../services/weatherService.js';
+
+// Evidence types the intake UI can tag a submission's attached media as —
+// anything else (including the default, absent field) falls back to 'photo'.
+const SUPPORTED_MEDIA_TYPES = new Set(['video', 'document', 'dataset', 'audio']);
 import asyncHandler from '../middleware/asyncHandler.js';
 
 // Fire-and-forget: looks up historical weather for the activity's site/date
@@ -99,10 +105,27 @@ async function create(req, res) {
       hazardsMedical, hazardsChemical, hazardsUnstable,
       instrument, timeSpent, secondVerifier, disposalMethod, followUp,
       brands_identified,
-      surveyLengthM, surveyAreaSqm, surveyMethod, debrisSource
+      surveyLengthM, surveyAreaSqm, surveyMethod, debrisSource,
+      // AI-assisted quick-report intake (spec §16-17): a JSON-encoded array
+      // of {family, code, confidence} from POST /api/ai/infer, the raw text
+      // the contributor typed (if the "Tell Blue Mind" tile was used), how
+      // the intake happened, and where the photo actually came from.
+      aiSubjects: aiSubjectsRaw,
+      rawText,
+      intakeMethod,
+      captureSource,
+      // 'video' | 'document' | 'dataset' | 'audio' when the attachment
+      // isn't a still photo — tags the resulting evidence row correctly
+      // instead of defaulting to 'photo'. These always arrive via
+      // req.files (multipart), never base64-in-JSON, since a video clip
+      // or a real document routinely exceeds the JSON body size limit.
+      mediaType
     } = req.body;
 
-    if (!category || !location || !quantity) {
+    // `!quantity` would wrongly reject 0 — a legitimate value for, e.g.,
+    // a water-quality measurement with no debris weight to report, not a
+    // missing one.
+    if (!category || !location || quantity === undefined || quantity === null || quantity === '') {
       return res.status(400).json({ ok: false, error: 'Missing required fields' });
     }
 
@@ -167,6 +190,36 @@ async function create(req, res) {
       actorId: req.user.id,
       payload: { contributorId: activity.contributorId, organizationId: activity.organizationId }
     });
+
+    let aiSubjects;
+    try {
+      aiSubjects = aiSubjectsRaw ? (typeof aiSubjectsRaw === 'string' ? JSON.parse(aiSubjectsRaw) : aiSubjectsRaw) : undefined;
+    } catch {
+      aiSubjects = undefined;
+    }
+
+    let createdEventId = null;
+    try {
+      createdEventId = await createEventForActivity(activity, {
+        aiSubjects, rawText, intakeMethod, captureSource,
+        evidenceType: SUPPORTED_MEDIA_TYPES.has(mediaType) ? mediaType : 'photo'
+      });
+    } catch (eventError) {
+      console.error('[environmentalEventService] failed to create event for activity', activity.id, ':', eventError.message);
+    }
+
+    if (createdEventId) {
+      try {
+        const pipelineResult = await runIntakePipeline(createdEventId);
+        if (pipelineResult.corroboration.matchCount > 0) {
+          console.log(
+            `[verifierService] activity ${activity.id} corroborated by ${pipelineResult.corroboration.matchCount} nearby event(s)`
+          );
+        }
+      } catch (pipelineError) {
+        console.error('[verifierService] intake pipeline failed for activity', activity.id, ':', pipelineError.message);
+      }
+    }
 
     try {
       await sendActivityNotification(activity);
@@ -298,6 +351,12 @@ async function review(req, res) {
       actorId: req.user.id,
       payload: { reviewNote: activity.reviewNote }
     });
+
+    try {
+      await recordReviewOnEvent(activity, req.user.id);
+    } catch (eventError) {
+      console.error('[environmentalEventService] failed to record review for activity', activity.id, ':', eventError.message);
+    }
 
     // A proof is recorded by the backend wallet only; the contributor never
     // needs to supply or own a Cardano wallet.

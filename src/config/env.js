@@ -11,5 +11,7 @@ export const env = {
   emailFrom: process.env.EMAIL_FROM || process.env.GMAIL_USER || 'no-reply@localhost',
   gmailUser: process.env.GMAIL_USER || '',
   gmailAppPassword: process.env.GMAIL_APP_PASSWORD || '',
-  openAiApiKey: process.env.OPENAI_API_KEY || ''
+  openaiApiKey: process.env.OPENAI_API_KEY || '',
+  openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  openaiTranscribeModel: process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1'
 };

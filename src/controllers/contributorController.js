@@ -1,4 +1,5 @@
 import { getContributorStats, getContributorInsights, getContributorExportSummary, getContributorExportActivities } from '../services/activityService.js';
+import { getContributorImpactSummary } from '../services/environmentalEventService.js';
 import { findUserById } from '../services/userService.js';
 import { streamContributorReportPdf } from '../services/reportPdfService.js';
 import asyncHandler from '../middleware/asyncHandler.js';
@@ -34,6 +35,17 @@ async function getStats(req, res) {
 async function getInsights(req, res) {
   const insights = await getContributorInsights(req.user.id);
   res.json({ ok: true, insights });
+}
+
+/**
+ * GET /api/contributor/impact
+ * The five "Your Impact" numbers from the environmental-event model
+ * (contributions, verified, actions completed, kg removed, locations
+ * affected) for the authenticated contributor — see spec §22.
+ */
+async function getImpact(req, res) {
+  const impact = await getContributorImpactSummary(req.user.id);
+  res.json({ ok: true, impact });
 }
 
 /**
@@ -77,5 +89,6 @@ async function exportReport(req, res) {
 export default {
   getStats: asyncHandler(getStats),
   getInsights: asyncHandler(getInsights),
+  getImpact: asyncHandler(getImpact),
   exportReport: asyncHandler(exportReport)
 };
