@@ -9,7 +9,11 @@ router.get('/users', authenticate, authorizeRoles('admin'), dashboardController.
 router.patch('/users/:id/active', authenticate, authorizeRoles('admin'), dashboardController.setUserActiveStatus);
 router.get('/organizations', dashboardController.getPublicOrganizations);
 router.post('/organizations', dashboardController.createPublicOrganization);
-router.get('/notifications', authenticate, authorizeRoles('admin'), dashboardController.getNotifications);
-router.patch('/notifications/:id/read', authenticate, authorizeRoles('admin'), dashboardController.markNotificationRead);
+// Any authenticated role — each caller only ever sees their own role's
+// broadcasts plus notifications targeted at their own user id (enforced in
+// the controller/service layer, not here), so this no longer needs to be
+// admin-only the way it was when notifications were admin-broadcast-only.
+router.get('/notifications', authenticate, dashboardController.getNotifications);
+router.patch('/notifications/:id/read', authenticate, dashboardController.markNotificationRead);
 
 export default router;

@@ -51,11 +51,21 @@ async function enrichNotification(notification) {
   };
 }
 
+// A notification is either broadcast to a whole role (recipient_id left
+// null — e.g. "new activity submitted" going to every admin) or targeted
+// at one specific user (recipient_id set — e.g. a closure notification
+// going only to the contributor who reported it). Those are different
+// conditions, not one combined with OR — an earlier version of this query
+// used a bare `recipient_role = $1 OR recipient_id = $2`, which meant any
+// caller passing a recipientId would also pull back every OTHER user's
+// broadcast-scoped rows for that role, and (for non-admin roles, where
+// every notification is targeted) potentially every other user's
+// notifications entirely.
 export async function listNotificationsForRecipient(recipientRole, recipientId = null) {
   const params = [recipientRole];
   let queryText = `SELECT ${notificationColumns}
                    FROM notifications
-                   WHERE recipient_role = $1`;
+                   WHERE (recipient_role = $1 AND recipient_id IS NULL)`;
 
   if (recipientId) {
     params.push(recipientId);
@@ -71,20 +81,54 @@ export async function listNotificationsForRecipient(recipientRole, recipientId =
 
 export async function markNotificationReadById(id, recipientRole, recipientId = null) {
   const params = [id, recipientRole];
+  // Same broadcast-vs-targeted split as listNotificationsForRecipient, and
+  // the id match must scope BOTH branches (parenthesized) — an earlier
+  // version's `id = $1 AND recipient_role = $2 OR recipient_id = $3` let
+  // the OR escape the id check entirely, so marking any one targeted
+  // notification read would mark every targeted notification for that
+  // user as read.
   let queryText = `UPDATE notifications
                    SET is_read = TRUE
                    WHERE id = $1
-                     AND recipient_role = $2`;
+                     AND ((recipient_role = $2 AND recipient_id IS NULL)`;
 
   if (recipientId) {
     params.push(recipientId);
     queryText += ` OR recipient_id = $3`;
   }
+  queryText += `)`;
 
   queryText += ` RETURNING ${notificationColumns}`;
 
   const result = await query(queryText, params);
   return mapNotificationRow(result.rows[0]);
+}
+
+/**
+ * notifyClosure — spec §22-23, §27's closing beat: "Something you reported
+ * changed." Sent to every contributor who has a stake in an event that
+ * just got closed out by a verified action — the event's own contributor
+ * plus anyone whose report was linked to it via 'corroborates' (the "three
+ * additional users" in the spec's worked example). Targeted per-user
+ * (recipientId set), not broadcast to a role, since this is specific to
+ * what that person reported.
+ */
+export async function notifyClosure({ contributorId, contributorRole, subjectLabel, locationLabel, kgRemoved, eventId }) {
+  if (!contributorId || !contributorRole) return null;
+
+  const title = 'Something you reported changed';
+  const what = subjectLabel || 'The issue';
+  const where = locationLabel ? ` near ${locationLabel}` : '';
+  const impact = kgRemoved ? ` ${kgRemoved} kg removed ·` : '';
+  const message = `${what} reported${where} has been removed.${impact} Verified`;
+
+  return createNotification({
+    recipientRole: contributorRole,
+    recipientId: contributorId,
+    title,
+    message,
+    payload: { eventId }
+  });
 }
 
 export async function send(activity) {

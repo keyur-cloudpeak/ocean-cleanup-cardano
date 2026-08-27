@@ -1,5 +1,7 @@
 import { query } from '../config/connection.js';
 import { toNumber } from '../utils/normalize.js';
+import { notifyClosure } from './notificationService.js';
+import { findUserById } from './userService.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -118,13 +120,28 @@ export async function createEventForActivity(activity, options = {}) {
   );
   const contributionId = contribution.rows[0].contribution_id;
 
+  const images = imageArrays(activity);
+
+  // A lone claim with nothing behind it starts 'unverified'; a claim
+  // backed by real evidence signals — a photo plus a GPS fix captured at
+  // source (spec §14: "GPS captured at source", "direct camera capture")
+  // — starts one notch up at 'supported' rather than making the
+  // contributor wait for a human to say "yes, this looks real" before it
+  // even reads as evidence-backed. Deliberately coarse (spec §14: "do not
+  // make a fake scientifically precise score immediately") — richer
+  // confidence weighting (AI confidence, contributor reliability, etc.)
+  // stays future work.
+  const hasGps = activity.lat != null && activity.lon != null;
+  const hasPhotoEvidence = images.length > 0;
+  const initialVerificationState = hasGps && hasPhotoEvidence ? 'supported' : 'unverified';
+
   const event = await query(
     `INSERT INTO environmental_events
        (contribution_id, legacy_activity_id, event_state, verification_state,
         occurred_at, lat, lon, location_label, location_source)
-     VALUES ($1, $2, 'observed', 'unverified', $3, $4, $5, $6, 'user_provided')
+     VALUES ($1, $2, 'observed', $3, $4, $5, $6, $7, 'user_provided')
      RETURNING event_id`,
-    [contributionId, activity.id, activity.timestamp, activity.lat, activity.lon, activity.location]
+    [contributionId, activity.id, initialVerificationState, activity.timestamp, activity.lat, activity.lon, activity.location]
   );
   const eventId = event.rows[0].event_id;
 
@@ -136,7 +153,7 @@ export async function createEventForActivity(activity, options = {}) {
     );
   }
 
-  for (const image of imageArrays(activity)) {
+  for (const image of images) {
     await query(
       `INSERT INTO evidence (event_id, contribution_id, evidence_type, storage_url, gateway_url, cid, capture_source)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -281,11 +298,35 @@ export async function detectAndLinkCorroboration(eventId) {
   }
 
   await bumpTowardCorroborated(self, matches.length);
+  // Each existing matched event's true corroborator count keeps growing as
+  // more reports come in — counting distinct linked events here (rather
+  // than hardcoding 1 per call) is what lets, e.g., a third citizen's
+  // report actually push an already-'supported' event on to 'corroborated'
+  // instead of that event silently capping out after its first match.
   for (const match of matches) {
-    await bumpTowardCorroborated(match, 1);
+    const corroboratorCount = await countCorroborators(match.event_id);
+    await bumpTowardCorroborated(match, corroboratorCount);
   }
 
   return { matchCount: matches.length, matchedEventIds: matches.map((m) => m.event_id) };
+}
+
+// Total distinct events linked to eventId via a 'corroborates' relationship
+// in either direction — corroboration is symmetric (two reports of the same
+// incident corroborate each other regardless of which one was submitted
+// first), so both directions count toward the same total.
+async function countCorroborators(eventId) {
+  const { rows } = await query(
+    `SELECT COUNT(DISTINCT other_id) AS count FROM (
+       SELECT to_event_id AS other_id FROM event_relationships
+       WHERE from_event_id = $1 AND relationship_type = 'corroborates'
+       UNION
+       SELECT from_event_id AS other_id FROM event_relationships
+       WHERE to_event_id = $1 AND relationship_type = 'corroborates'
+     ) AS corroborators`,
+    [eventId]
+  );
+  return Number(rows[0]?.count || 0);
 }
 
 async function bumpTowardCorroborated(current, corroboratingCount) {
@@ -339,6 +380,7 @@ function mapEventSummaryRow(row) {
     locationLabel: row.location_label,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    organizationId: row.organization_id,
     subjects: row.subjects || []
   };
 }
@@ -348,7 +390,7 @@ function mapEventSummaryRow(row) {
  * first. Filters are optional and silently ignored if the value isn't a
  * real enum/family member, rather than erroring on a typo'd query param.
  */
-export async function listEvents({ eventState, verificationState, subjectFamily, contributorId, limit, offset } = {}) {
+export async function listEvents({ eventState, verificationState, subjectFamily, contributorId, organizationId, limit, offset } = {}) {
   const conditions = [];
   const params = [];
 
@@ -357,6 +399,13 @@ export async function listEvents({ eventState, verificationState, subjectFamily,
     conditions.push(`EXISTS (
       SELECT 1 FROM contributions c
       WHERE c.contribution_id = e.contribution_id AND c.contributor_id = $${params.length}
+    )`);
+  }
+  if (UUID_PATTERN.test(organizationId || '')) {
+    params.push(organizationId);
+    conditions.push(`EXISTS (
+      SELECT 1 FROM contributions c
+      WHERE c.contribution_id = e.contribution_id AND c.organization_id = $${params.length}
     )`);
   }
   if (LIST_EVENT_STATES.has(eventState)) {
@@ -383,7 +432,7 @@ export async function listEvents({ eventState, verificationState, subjectFamily,
 
   const result = await query(
     `SELECT e.event_id, e.legacy_activity_id, e.title, e.description, e.event_state, e.verification_state,
-            e.occurred_at, e.lat, e.lon, e.location_label, e.created_at, e.updated_at,
+            e.occurred_at, e.lat, e.lon, e.location_label, e.created_at, e.updated_at, c.organization_id,
             COALESCE(
               json_agg(DISTINCT jsonb_build_object(
                 'subjectId', s.subject_id, 'family', s.family, 'code', s.code, 'label', s.label
@@ -391,10 +440,11 @@ export async function listEvents({ eventState, verificationState, subjectFamily,
               '[]'
             ) AS subjects
      FROM environmental_events e
+     LEFT JOIN contributions c ON c.contribution_id = e.contribution_id
      LEFT JOIN event_subjects es ON es.event_id = e.event_id
      LEFT JOIN subjects s ON s.subject_id = es.subject_id
      ${whereClause}
-     GROUP BY e.event_id
+     GROUP BY e.event_id, c.organization_id
      ORDER BY e.created_at DESC
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
@@ -816,14 +866,17 @@ export async function planActionForEvent(observationEventId, { actorId, subjectC
 }
 
 /**
- * completeAction — closes the loop from spec §27: the action event moves
- * to 'addressed', an impact record captures what changed (kg removed),
- * and every observation this action responds to gets a 'removed'
- * relationship plus its own state bumped to 'addressed' — the exact
- * "something you reported changed" moment the Impact Stories feed reads
- * from.
+ * completeAction — the action event itself moves to 'addressed' (the team's
+ * side of the work is done) and an impact record + completion photos land
+ * as evidence (spec §27: "They upload photos and weight"). The
+ * observations it responds to move only as far as 'action_underway' here
+ * — spec §27 has a verifier review the evidence *after* completion before
+ * the original report is closed out, so closing those to 'addressed' is
+ * verifyEvent()'s job below, not this one's. This function's own
+ * 'addressed' is about the action being done, not the report being
+ * confirmed resolved.
  */
-export async function completeAction(actionEventId, { actorId, kgRemoved, note }) {
+export async function completeAction(actionEventId, { actorId, kgRemoved, note, images }) {
   const { rows } = await query(
     `SELECT event_state FROM environmental_events WHERE event_id = $1`,
     [actionEventId]
@@ -842,6 +895,17 @@ export async function completeAction(actionEventId, { actorId, kgRemoved, note }
     `UPDATE environmental_events SET event_state = 'addressed', updated_at = NOW() WHERE event_id = $1`,
     [actionEventId]
   );
+
+  // No contribution_id here (evidence.contribution_id is nullable) — a
+  // completion photo is attached directly by the acting org/verifier at
+  // closeout, not submitted as a raw contribution the way intake evidence is.
+  for (const image of images || []) {
+    await query(
+      `INSERT INTO evidence (event_id, evidence_type, storage_url, gateway_url, cid, capture_source)
+       VALUES ($1, 'photo', $2, $3, $4, 'unknown')`,
+      [actionEventId, image.storageUrl, image.gatewayUrl, image.cid]
+    );
+  }
 
   if (kgRemoved != null && Number(kgRemoved) > 0) {
     await query(
@@ -868,20 +932,199 @@ export async function completeAction(actionEventId, { actorId, kgRemoved, note }
       [row.to_event_id]
     );
     const obsOldState = obsRows[0]?.event_state;
-    if (obsOldState && obsOldState !== 'addressed') {
+    // Bumped to 'action_underway' (the removal has happened, on the
+    // ground), not 'addressed' — that final close-out waits for a
+    // verifier, in verifyEvent() below. Never touches an observation
+    // that's already past this point (addressed/disputed/etc.).
+    if (['observed', 'corroborated', 'needs_attention', 'action_planned'].includes(obsOldState)) {
       await query(
         `INSERT INTO event_state_history (event_id, field, old_value, new_value, changed_by, note)
-         VALUES ($1, 'event_state', $2, 'addressed', $3, 'Closed by linked action')`,
+         VALUES ($1, 'event_state', $2, 'action_underway', $3, 'Removal completed, pending verification')`,
         [row.to_event_id, obsOldState, actorId]
       );
       await query(
-        `UPDATE environmental_events SET event_state = 'addressed', updated_at = NOW() WHERE event_id = $1`,
+        `UPDATE environmental_events SET event_state = 'action_underway', updated_at = NOW() WHERE event_id = $1`,
         [row.to_event_id]
       );
     }
   }
 
   return responded.map((r) => r.to_event_id);
+}
+
+// Every contributor with a stake in eventId: its own reporter, plus the
+// reporters of anything linked to it via 'corroborates' (the "three
+// additional users" from spec §27's example) — everyone whose report this
+// closure actually resolves, not just whoever happened to submit first.
+async function getContributorsToNotify(eventId) {
+  const { rows } = await query(
+    `SELECT DISTINCT contributor_id FROM (
+       SELECT c.contributor_id
+       FROM environmental_events e
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE e.event_id = $1
+       UNION
+       SELECT c.contributor_id
+       FROM event_relationships r
+       JOIN environmental_events e ON e.event_id = r.to_event_id
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE r.relationship_type = 'corroborates' AND r.from_event_id = $1
+       UNION
+       SELECT c.contributor_id
+       FROM event_relationships r
+       JOIN environmental_events e ON e.event_id = r.from_event_id
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE r.relationship_type = 'corroborates' AND r.to_event_id = $1
+     ) AS contributors
+     WHERE contributor_id IS NOT NULL`,
+    [eventId]
+  );
+  return rows.map((r) => r.contributor_id);
+}
+
+async function getPrimarySubjectLabel(eventId) {
+  const { rows } = await query(
+    `SELECT s.label FROM event_subjects es
+     JOIN subjects s ON s.subject_id = es.subject_id
+     WHERE es.event_id = $1
+     ORDER BY es.confidence DESC NULLS LAST, es.created_at ASC
+     LIMIT 1`,
+    [eventId]
+  );
+  return rows[0]?.label || null;
+}
+
+// Notifies everyone with a stake in eventId that it just closed (spec
+// §22-23, §27: "Something you reported changed"). Each recipient's role is
+// looked up individually — contributors span both the 'contributor' and
+// 'citizen' roles, and notifications.recipient_role must match whichever
+// one a given person actually has.
+async function notifyEventClosure(eventId, { locationLabel, kgRemoved }) {
+  const [subjectLabel, contributorIds] = await Promise.all([
+    getPrimarySubjectLabel(eventId),
+    getContributorsToNotify(eventId)
+  ]);
+
+  for (const contributorId of contributorIds) {
+    const contributor = await findUserById(contributorId);
+    if (!contributor?.role) continue;
+    await notifyClosure({
+      contributorId,
+      contributorRole: contributor.role,
+      subjectLabel,
+      locationLabel,
+      kgRemoved,
+      eventId
+    });
+  }
+}
+
+const VERIFY_OUTCOMES = new Set(['verified', 'disputed', 'unable_to_verify']);
+
+/**
+ * verifyEvent — spec §20/§27's missing piece: a verifier (not the
+ * contributor/org who did the work) reviews the evidence and records an
+ * outcome. Only a 'verified' outcome on an action event cascades to close
+ * out the observation(s) it 'responds_to' — completing an action is not
+ * itself sufficient to mark the original report resolved, a human review
+ * is. 'disputed'/'unable_to_verify' route the event into the matching
+ * existing event_state values rather than silently closing anything.
+ */
+export async function verifyEvent(eventId, { verifierId, outcome, notes }) {
+  if (!VERIFY_OUTCOMES.has(outcome)) {
+    throw new Error(`Unknown verification outcome: ${outcome}`);
+  }
+
+  const { rows } = await query(
+    `SELECT event_state, verification_state FROM environmental_events WHERE event_id = $1`,
+    [eventId]
+  );
+  const current = rows[0];
+  if (!current) {
+    throw new Error('Event not found');
+  }
+
+  await query(
+    `INSERT INTO verifications (event_id, verifier_id, outcome, notes)
+     VALUES ($1, $2, $3, $4)`,
+    [eventId, verifierId, outcome, notes || null]
+  );
+
+  if (outcome === 'verified') {
+    if (VERIFICATION_STATE_RANK.verified > VERIFICATION_STATE_RANK[current.verification_state]) {
+      await query(
+        `INSERT INTO event_state_history (event_id, field, old_value, new_value, changed_by, note)
+         VALUES ($1, 'verification_state', $2, 'verified', $3, $4)`,
+        [eventId, current.verification_state, verifierId, notes || null]
+      );
+      await query(
+        `UPDATE environmental_events SET verification_state = 'verified', updated_at = NOW() WHERE event_id = $1`,
+        [eventId]
+      );
+    }
+
+    const { rows: responded } = await query(
+      `SELECT to_event_id FROM event_relationships WHERE from_event_id = $1 AND relationship_type = 'responds_to'`,
+      [eventId]
+    );
+
+    const { rows: impactRows } = await query(
+      `SELECT value FROM event_impact WHERE event_id = $1 AND metric = 'debris_removed_kg' ORDER BY created_at DESC LIMIT 1`,
+      [eventId]
+    );
+    const kgRemoved = impactRows[0]?.value ?? null;
+
+    const closedEventIds = [];
+    for (const row of responded) {
+      const { rows: obsRows } = await query(
+        `SELECT event_state, location_label FROM environmental_events WHERE event_id = $1`,
+        [row.to_event_id]
+      );
+      const obsOldState = obsRows[0]?.event_state;
+      if (obsOldState && obsOldState !== 'addressed') {
+        await query(
+          `INSERT INTO event_state_history (event_id, field, old_value, new_value, changed_by, note)
+           VALUES ($1, 'event_state', $2, 'addressed', $3, 'Closed by verified action')`,
+          [row.to_event_id, obsOldState, verifierId]
+        );
+        await query(
+          `UPDATE environmental_events SET event_state = 'addressed', updated_at = NOW() WHERE event_id = $1`,
+          [row.to_event_id]
+        );
+        closedEventIds.push(row.to_event_id);
+
+        // Fire-and-forget from the closure itself: a notification failure
+        // must never undo or block the state change that already committed.
+        notifyEventClosure(row.to_event_id, {
+          locationLabel: obsRows[0].location_label,
+          kgRemoved
+        }).catch((err) =>
+          console.error('[notificationService] closure notification failed for event', row.to_event_id, ':', err.message)
+        );
+      }
+    }
+
+    return { closedEventIds };
+  }
+
+  // 'disputed' / 'unable_to_verify' — the enum already has an event_state
+  // for each; route into it rather than leaving verification_state as the
+  // only record of the outcome. Never overrides an event already
+  // 'addressed' — a verifier disputing evidence on a closed report should
+  // not silently reopen it.
+  if (current.event_state !== 'addressed') {
+    await query(
+      `INSERT INTO event_state_history (event_id, field, old_value, new_value, changed_by, note)
+       VALUES ($1, 'event_state', $2, $3, $4, $5)`,
+      [eventId, current.event_state, outcome, verifierId, notes || null]
+    );
+    await query(
+      `UPDATE environmental_events SET event_state = $2, updated_at = NOW() WHERE event_id = $1`,
+      [eventId, outcome]
+    );
+  }
+
+  return { closedEventIds: [] };
 }
 
 const EVENT_RELATIONSHIP_TYPES = new Set([

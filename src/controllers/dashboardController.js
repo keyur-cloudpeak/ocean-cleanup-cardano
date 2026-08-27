@@ -72,15 +72,21 @@ async function createPublicOrganization(req, res) {
   res.status(201).json({ ok: true, organization: { orgId: org.orgId, name: org.name } });
 }
 
+// Scoped to the caller's own role/id now, not hardcoded to 'admin' — every
+// role gets its own notifications (admins: new-submission broadcasts;
+// contributors/citizens: closure notifications from notifyEventClosure).
+// listNotificationsForRecipient/markNotificationReadById already keep
+// broadcast (recipient_id null) and targeted (recipient_id set) rows
+// properly scoped, so this is safe to open up beyond admin.
 async function getNotifications(req, res) {
-  const notifications = await listNotificationsForRecipient('admin', req.user?.id);
+  const notifications = await listNotificationsForRecipient(req.user.role, req.user.id);
   const unreadCount = notifications.filter((item) => !item.isRead).length;
 
   res.json({ ok: true, notifications, unreadCount });
 }
 
 async function markNotificationRead(req, res) {
-  const notification = await markNotificationReadById(req.params.id, 'admin', req.user?.id);
+  const notification = await markNotificationReadById(req.params.id, req.user.role, req.user.id);
   if (!notification) {
     return res.status(404).json({ ok: false, error: 'Notification not found' });
   }
