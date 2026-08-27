@@ -562,6 +562,20 @@ export async function getEventDetail(eventId) {
   };
 }
 
+// Trailing 30-day windows rather than calendar months — "vs last month"
+// read as a rolling comparison avoids the partial-month skew a
+// month-to-date vs. same-days-last-month comparison would have on the
+// 1st-2nd of a month, and needs no day-of-month clamping logic.
+function pctChange(curRaw, prevRaw) {
+  const cur = Number(curRaw) || 0;
+  const prev = Number(prevRaw) || 0;
+  // A zero-row prior period makes the percentage undefined (division by
+  // zero) rather than "infinite growth" — the UI omits the trend pill
+  // instead of showing a fabricated number.
+  if (prev === 0) return null;
+  return Math.round(((cur - prev) / prev) * 100);
+}
+
 /**
  * getContributorImpactSummary — the five numbers the spec's "Your Impact"
  * example calls out directly (spec §22): contributions made, how many
@@ -571,10 +585,78 @@ export async function getEventDetail(eventId) {
  * reports on the legacy activities table — this reports on the event
  * model, so a contribution and its resulting event are counted once
  * each, not conflated with a raw activity row count.
+ *
+ * Also returns `trends` — each metric's percent change between the
+ * trailing 30-day window and the 30 days before that — for the "vs last
+ * month" pills on the contributor dashboard's impact cards. verified/
+ * actions-completed trends key off event_state_history (the record of
+ * *when* an event crossed into that state), not the events table's
+ * current state, since the latter has no reliable per-transition
+ * timestamp of its own.
  */
 export async function getContributorImpactSummary(contributorId) {
   const { rows } = await query(
-    `SELECT
+    `WITH bounds AS (
+       SELECT NOW() - INTERVAL '30 days' AS cur_start, NOW() - INTERVAL '60 days' AS prev_start
+     ),
+     contribution_counts AS (
+       SELECT
+         COUNT(*) FILTER (WHERE submitted_at >= (SELECT cur_start FROM bounds)) AS cur,
+         COUNT(*) FILTER (WHERE submitted_at >= (SELECT prev_start FROM bounds) AND submitted_at < (SELECT cur_start FROM bounds)) AS prev
+       FROM contributions
+       WHERE contributor_id = $1
+     ),
+     verified_counts AS (
+       SELECT
+         COUNT(DISTINCT h.event_id) FILTER (WHERE h.changed_at >= (SELECT cur_start FROM bounds)) AS cur,
+         COUNT(DISTINCT h.event_id) FILTER (WHERE h.changed_at >= (SELECT prev_start FROM bounds) AND h.changed_at < (SELECT cur_start FROM bounds)) AS prev
+       FROM event_state_history h
+       JOIN environmental_events e ON e.event_id = h.event_id
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE c.contributor_id = $1 AND h.field = 'verification_state' AND h.new_value = 'verified'
+     ),
+     action_counts AS (
+       SELECT
+         COUNT(DISTINCT h.event_id) FILTER (WHERE h.changed_at >= (SELECT cur_start FROM bounds)) AS cur,
+         COUNT(DISTINCT h.event_id) FILTER (WHERE h.changed_at >= (SELECT prev_start FROM bounds) AND h.changed_at < (SELECT cur_start FROM bounds)) AS prev
+       FROM event_state_history h
+       JOIN environmental_events e ON e.event_id = h.event_id
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE c.contributor_id = $1 AND h.field = 'event_state' AND h.new_value = 'addressed'
+     ),
+     kg_from_impact AS (
+       SELECT
+         COALESCE(SUM(ei.value) FILTER (WHERE ei.recorded_at >= (SELECT cur_start FROM bounds)), 0) AS cur,
+         COALESCE(SUM(ei.value) FILTER (WHERE ei.recorded_at >= (SELECT prev_start FROM bounds) AND ei.recorded_at < (SELECT cur_start FROM bounds)), 0) AS prev
+       FROM event_impact ei
+       JOIN environmental_events e ON e.event_id = ei.event_id
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE c.contributor_id = $1 AND ei.metric = 'debris_removed_kg'
+     ),
+     kg_from_subjects AS (
+       -- Same one-per-event dedupe as the totals query below, just
+       -- windowed on when that subject row was created.
+       SELECT
+         COALESCE(SUM(per_event.qty) FILTER (WHERE per_event.created_at >= (SELECT cur_start FROM bounds)), 0) AS cur,
+         COALESCE(SUM(per_event.qty) FILTER (WHERE per_event.created_at >= (SELECT prev_start FROM bounds) AND per_event.created_at < (SELECT cur_start FROM bounds)), 0) AS prev
+       FROM (
+         SELECT DISTINCT ON (es.event_id) (es.attributes->>'quantity_kg')::numeric AS qty, es.created_at
+         FROM event_subjects es
+         JOIN environmental_events e ON e.event_id = es.event_id
+         JOIN contributions c ON c.contribution_id = e.contribution_id
+         WHERE c.contributor_id = $1 AND es.attributes ? 'quantity_kg'
+         ORDER BY es.event_id, es.created_at ASC
+       ) per_event
+     ),
+     location_counts AS (
+       SELECT
+         COUNT(DISTINCT COALESCE(NULLIF(TRIM(e.location_label), ''), e.event_id::text)) FILTER (WHERE e.created_at >= (SELECT cur_start FROM bounds)) AS cur,
+         COUNT(DISTINCT COALESCE(NULLIF(TRIM(e.location_label), ''), e.event_id::text)) FILTER (WHERE e.created_at >= (SELECT prev_start FROM bounds) AND e.created_at < (SELECT cur_start FROM bounds)) AS prev
+       FROM environmental_events e
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE c.contributor_id = $1
+     )
+     SELECT
        (SELECT COUNT(*) FROM contributions WHERE contributor_id = $1) AS contributions,
        (SELECT COUNT(*) FROM environmental_events e
           JOIN contributions c ON c.contribution_id = e.contribution_id
@@ -610,7 +692,14 @@ export async function getContributorImpactSummary(contributorId) {
        (SELECT COUNT(DISTINCT COALESCE(NULLIF(TRIM(e.location_label), ''), e.event_id::text))
           FROM environmental_events e
           JOIN contributions c ON c.contribution_id = e.contribution_id
-          WHERE c.contributor_id = $1) AS locations_affected`,
+          WHERE c.contributor_id = $1) AS locations_affected,
+       cc.cur AS contributions_cur, cc.prev AS contributions_prev,
+       vc.cur AS verified_cur, vc.prev AS verified_prev,
+       ac.cur AS actions_cur, ac.prev AS actions_prev,
+       (ki.cur + ks.cur) AS kg_cur, (ki.prev + ks.prev) AS kg_prev,
+       lc.cur AS locations_cur, lc.prev AS locations_prev
+     FROM contribution_counts cc, verified_counts vc, action_counts ac,
+          kg_from_impact ki, kg_from_subjects ks, location_counts lc`,
     [contributorId]
   );
 
@@ -620,7 +709,14 @@ export async function getContributorImpactSummary(contributorId) {
     verifiedEvents: Number(row.verified_events) || 0,
     actionsCompleted: Number(row.actions_completed) || 0,
     kgRemoved: Number(row.kg_removed) || 0,
-    locationsAffected: Number(row.locations_affected) || 0
+    locationsAffected: Number(row.locations_affected) || 0,
+    trends: {
+      contributions: pctChange(row.contributions_cur, row.contributions_prev),
+      verifiedEvents: pctChange(row.verified_cur, row.verified_prev),
+      actionsCompleted: pctChange(row.actions_cur, row.actions_prev),
+      kgRemoved: pctChange(row.kg_cur, row.kg_prev),
+      locationsAffected: pctChange(row.locations_cur, row.locations_prev)
+    }
   };
 }
 
