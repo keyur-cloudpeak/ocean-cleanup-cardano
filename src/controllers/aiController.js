@@ -1,4 +1,4 @@
-import { isAiConfigured, inferEventFromImage, inferEventFromText, inferEventFromVoice, logAiInference } from '../services/aiInferenceService.js';
+import { isAiConfigured, inferEventFromImage, inferEventFromText, inferEventFromVoice, logAiInference, chatWithBlueMind } from '../services/aiInferenceService.js';
 import { isSupportedDocumentType, extractTextFromDocument } from '../services/documentService.js';
 import asyncHandler from '../middleware/asyncHandler.js';
 
@@ -65,6 +65,21 @@ async function infer(req, res) {
   res.json({ ok: true, inference });
 }
 
+async function chat(req, res) {
+  const { messages } = req.body;
+  if (!Array.isArray(messages)) {
+    return res.status(400).json({ ok: false, error: 'messages must be an array.' });
+  }
+
+  const reply = await chatWithBlueMind(messages);
+  if (!reply) {
+    return res.status(503).json({ ok: false, error: 'AI chat is not configured on this server yet.' });
+  }
+
+  return res.json({ ok: true, reply });
+}
+
 export default {
-  infer: asyncHandler(infer)
+  infer: asyncHandler(infer),
+  chat: asyncHandler(chat)
 };

@@ -131,6 +131,28 @@ async function callOpenAi(messages) {
   }
 }
 
+export async function chatWithBlueMind(messages) {
+  if (!isAiConfigured()) return null;
+
+  const safeMessages = messages
+    .filter((message) => message && ['user', 'assistant'].includes(message.role) && typeof message.content === 'string')
+    .slice(-10)
+    .map((message) => ({ role: message.role, content: message.content.slice(0, 1000) }));
+  if (!safeMessages.length) return null;
+
+  const response = await callOpenAi([
+    {
+      role: 'system',
+      content: "You are Blue Mind, a concise and friendly assistant for an ocean cleanup platform. Help citizens and contributors submit accurate environmental reports, understand verification, and interpret their impact. Do not invent platform data or claim to have taken actions. If a question is outside ocean cleanup, briefly say you can help with the platform and environmental reporting. Respond with ONLY a JSON object in exactly this shape: {\"reply\":\"your response\"}."
+    },
+    ...safeMessages
+  ]);
+
+  return typeof response === 'object' && typeof response.reply === 'string'
+    ? response.reply.slice(0, 2000)
+    : null;
+}
+
 /**
  * inferEventFromImage — classifies a base64-encoded photo against Blue
  * Mind's subject taxonomy. Returns null if AI isn't configured (caller
