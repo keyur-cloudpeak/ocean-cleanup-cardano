@@ -67,7 +67,7 @@ On weight: you are eyeballing a photograph, so you cannot measure mass. Give a d
 `.trim();
 
 export async function analyzeWasteImage({ base64, mimeType, location }) {
-  if (!env.openAiApiKey) {
+  if (!env.openaiApiKey) {
     const error = new Error('AI analysis is not configured');
     error.statusCode = 503;
     throw error;
@@ -77,7 +77,7 @@ export async function analyzeWasteImage({ base64, mimeType, location }) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${env.openAiApiKey}`
+      Authorization: `Bearer ${env.openaiApiKey}`
     },
     body: JSON.stringify({
       model: MODEL,
