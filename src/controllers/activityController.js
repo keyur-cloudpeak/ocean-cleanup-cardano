@@ -15,6 +15,7 @@ import { runIntakePipeline } from '../services/verifierService.js';
 import { awardApprovalPoints } from '../services/rewardLedgerService.js';
 import { fetchWeatherContext } from '../services/weatherService.js';
 import { logExternalEnrichment } from '../services/externalEnrichmentService.js';
+import { resolveContributorOrganization } from '../services/organizationService.js';
 import { parseBase64Image, uploadMultipleFiles, uploadMultipleBase64 } from '../utils/mediaUpload.js';
 
 // Evidence types the intake UI can tag a submission's attached media as —
@@ -120,6 +121,15 @@ async function create(req, res) {
       return res.status(400).json({ ok: false, error: 'Missing required fields' });
     }
 
+    // spec §19 — derive the org from who's signed in when the request
+    // doesn't name one, and refuse a named one the contributor isn't
+    // actually a member of. Previously any organizationId in the body was
+    // taken at face value.
+    const orgContext = await resolveContributorOrganization(req.user.id, organizationId);
+    if (orgContext.error) {
+      return res.status(403).json({ ok: false, error: orgContext.error });
+    }
+
     let imageCids = [];
     let imageIpfsUrls = [];
     let imageGatewayUrls = [];
@@ -154,7 +164,7 @@ async function create(req, res) {
       quantity,
       evidenceHash,
       contributorId: req.user.id,
-      organizationId,
+      organizationId: orgContext.organizationId,
       imageCids,
       imageIpfsUrls,
       imageGatewayUrls,
@@ -269,6 +279,18 @@ async function update(req, res) {
       brands_identified,
       surveyLengthM, surveyAreaSqm, surveyMethod, debrisSource
     } = req.body;
+
+    // spec §19 — same membership check as create, but deliberately NOT the
+    // same fallback: here `undefined` means "leave this field alone", so
+    // deriving the contributor's org would silently re-attribute an
+    // existing activity on any unrelated edit. Only a value the caller
+    // actually sent is validated.
+    if (organizationId !== undefined) {
+      const orgContext = await resolveContributorOrganization(req.user.id, organizationId);
+      if (orgContext.error) {
+        return res.status(403).json({ ok: false, error: orgContext.error });
+      }
+    }
 
     const updates = {
       category,

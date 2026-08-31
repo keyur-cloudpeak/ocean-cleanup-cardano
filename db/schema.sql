@@ -405,6 +405,15 @@ CREATE TABLE IF NOT EXISTS environmental_events (
 -- coastal_region is NOT added — no reliable free gazetteer resolves an
 -- informal region name like "Gulf Coast" from a lat/lon, and inventing one
 -- would violate spec §17 ("AI/enrichment must not silently invent facts").
+-- Field-level provenance for location (spec §17). `location_source` was a
+-- single value covering the whole location, which stopped being true once
+-- admin_area/country/water_body started arriving from a reverse-geocode:
+-- those are EXTERNAL_ENRICHMENT while lat/lon are user_provided or
+-- system_captured. Same { field: provenance_source } shape as
+-- event_subjects.attribute_provenance; keys absent from the map fall back
+-- to `location_source` at read time, so older rows keep their old meaning.
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS location_provenance JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS location_accuracy_m NUMERIC(10, 2);
 ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS location_capture_method TEXT
     CHECK (location_capture_method IS NULL OR location_capture_method IN ('gps', 'manual_pin', 'unknown'));
@@ -552,6 +561,28 @@ CREATE TABLE IF NOT EXISTS event_impact (
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_impact_event_id ON event_impact (event_id);
+
+-- The detailed internal signals behind an event's verification_state
+-- (spec §14). The spec is explicit that the *exposed* levels stay coarse
+-- (unverified/supported/corroborated/verified) and that we must not
+-- "make a fake scientifically precise score" — so this deliberately
+-- stores no weights and no composite number. Each signal only records
+-- which way it leans, plus a human-readable reason, so a verifier can see
+-- WHY an event sits where it does and judge for themselves.
+--
+-- Kept as a signal ledger rather than fixed columns, the same way
+-- event_impact is, so new signals don't require a schema change.
+CREATE TABLE IF NOT EXISTS confidence_signals (
+    signal_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id     UUID NOT NULL REFERENCES environmental_events(event_id) ON DELETE CASCADE,
+    signal       TEXT NOT NULL,
+    stance       TEXT NOT NULL CHECK (stance IN ('supports', 'weakens', 'neutral')),
+    detail       TEXT,
+    computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT confidence_signals_event_signal_unique UNIQUE (event_id, signal)
+);
+
+CREATE INDEX IF NOT EXISTS idx_confidence_signals_event_id ON confidence_signals (event_id);
 
 -- MEASUREMENT as its own entity (spec §26) — a structured environmental
 -- reading (water quality, conditions), distinct from event_subjects'

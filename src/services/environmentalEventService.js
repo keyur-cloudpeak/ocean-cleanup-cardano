@@ -6,6 +6,7 @@ import { sanitizeSubjectAttributes } from '../constants/subjectAttributes.js';
 import { recordVerificationOnChain } from './onchainProofService.js';
 import { fetchLocationContext } from './locationEnrichmentService.js';
 import { logExternalEnrichment } from './externalEnrichmentService.js';
+import { computeConfidenceSignals } from './confidenceSignalService.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -187,25 +188,45 @@ export async function createEventForActivity(activity, options = {}) {
   // source (spec §14: "GPS captured at source", "direct camera capture")
   // — starts one notch up at 'supported' rather than making the
   // contributor wait for a human to say "yes, this looks real" before it
-  // even reads as evidence-backed. Deliberately coarse (spec §14: "do not
-  // make a fake scientifically precise score immediately") — richer
-  // confidence weighting (AI confidence, contributor reliability, etc.)
-  // stays future work.
+  // even reads as evidence-backed. Deliberately coarse — the richer
+  // signals behind this level (AI confidence, contributor reliability,
+  // instrument quality, contradictory evidence) are recorded separately by
+  // confidenceSignalService rather than compressed into a fake score here
+  // (spec §14: "do not make a fake scientifically precise score").
   const hasGps = activity.lat != null && activity.lon != null;
   const hasPhotoEvidence = images.length > 0;
   const initialVerificationState = hasGps && hasPhotoEvidence ? 'supported' : 'unverified';
+
+  const captureMethod = LOCATION_CAPTURE_METHODS.has(locationCaptureMethod) ? locationCaptureMethod : null;
+  const accuracyMeters = Number.isFinite(Number(locationAccuracy)) ? Number(locationAccuracy) : null;
+
+  // Per-field location provenance (spec §17). lat/lon are system_captured
+  // only when the device actually measured them; a hand-placed pin is
+  // user_provided. The label is whatever the picker's reverse geocode
+  // returned and is read-only in the UI, so it's external_enrichment —
+  // but only when we know the picker was used at all; a legacy or API
+  // submission that just posted a location string stays user_provided
+  // rather than being credited to a lookup that never ran.
+  const locationProvenance = captureMethod
+    ? {
+        lat: captureMethod === 'gps' ? 'system_captured' : 'user_provided',
+        lon: captureMethod === 'gps' ? 'system_captured' : 'user_provided',
+        location_label: 'external_enrichment',
+        location_capture_method: 'system_captured',
+        ...(accuracyMeters != null ? { location_accuracy_m: 'system_captured' } : {})
+      }
+    : {};
 
   const event = await query(
     `INSERT INTO environmental_events
        (contribution_id, legacy_activity_id, event_state, verification_state,
         occurred_at, lat, lon, location_label, location_source,
-        location_accuracy_m, location_capture_method)
-     VALUES ($1, $2, 'observed', $3, $4, $5, $6, $7, 'user_provided', $8, $9)
+        location_accuracy_m, location_capture_method, location_provenance)
+     VALUES ($1, $2, 'observed', $3, $4, $5, $6, $7, 'user_provided', $8, $9, $10)
      RETURNING event_id`,
     [
       contributionId, activity.id, initialVerificationState, activity.timestamp, activity.lat, activity.lon, activity.location,
-      Number.isFinite(Number(locationAccuracy)) ? Number(locationAccuracy) : null,
-      LOCATION_CAPTURE_METHODS.has(locationCaptureMethod) ? locationCaptureMethod : null
+      accuracyMeters, captureMethod, JSON.stringify(locationProvenance)
     ]
   );
   const eventId = event.rows[0].event_id;
@@ -227,11 +248,21 @@ export async function createEventForActivity(activity, options = {}) {
           result: locationContext
         });
         if (adminArea == null && country == null && waterBody == null) return;
+        // Each field this lookup actually resolved is recorded as
+        // external_enrichment (spec §17) — the whole reason location
+        // provenance had to become per-field: these arrive from a
+        // third-party geocoder, not from the contributor.
+        const enrichedProvenance = {
+          ...(adminArea != null ? { admin_area: 'external_enrichment' } : {}),
+          ...(country != null ? { country: 'external_enrichment' } : {}),
+          ...(waterBody != null ? { water_body: 'external_enrichment' } : {})
+        };
         return query(
           `UPDATE environmental_events
-           SET admin_area = COALESCE($2, admin_area), country = COALESCE($3, country), water_body = COALESCE($4, water_body)
+           SET admin_area = COALESCE($2, admin_area), country = COALESCE($3, country), water_body = COALESCE($4, water_body),
+               location_provenance = location_provenance || $5::jsonb
            WHERE event_id = $1`,
-          [eventId, adminArea, country, waterBody]
+          [eventId, adminArea, country, waterBody, JSON.stringify(enrichedProvenance)]
         );
       })
       .catch((err) => console.error('[locationEnrichmentService] background update failed for event', eventId, ':', err.message));
@@ -639,7 +670,7 @@ export async function getEventDetail(eventId) {
 
   const { rows: eventRows } = await query(
     `SELECT event_id, legacy_activity_id, title, description, event_state, verification_state,
-            occurred_at, lat, lon, location_label, location_source,
+            occurred_at, lat, lon, location_label, location_source, location_provenance,
             location_accuracy_m, location_capture_method, admin_area, country, water_body,
             created_at, updated_at
      FROM environmental_events
@@ -649,7 +680,7 @@ export async function getEventDetail(eventId) {
   const eventRow = eventRows[0];
   if (!eventRow) return null;
 
-  const [subjects, evidence, relationshipsFrom, relationshipsTo, stateHistory, verifications, impact, measurements] =
+  const [subjects, evidence, relationshipsFrom, relationshipsTo, stateHistory, verifications, impact, measurements, confidenceSignals] =
     await Promise.all([
       query(
         `SELECT es.event_subject_id, es.subject_id, s.family, s.code, s.label,
@@ -713,6 +744,15 @@ export async function getEventDetail(eventId) {
          WHERE event_id = $1
          ORDER BY recorded_at ASC`,
         [eventId]
+      ),
+      query(
+        `SELECT signal, stance, detail, computed_at
+         FROM confidence_signals
+         WHERE event_id = $1
+         ORDER BY
+           CASE stance WHEN 'weakens' THEN 0 WHEN 'supports' THEN 1 ELSE 2 END,
+           signal ASC`,
+        [eventId]
       )
     ]);
 
@@ -728,6 +768,14 @@ export async function getEventDetail(eventId) {
     adminArea: eventRow.admin_area,
     country: eventRow.country,
     waterBody: eventRow.water_body,
+    // Per-field location provenance (spec §17). Any field with no stored
+    // entry — every row written before this column existed — falls back to
+    // location_source, exactly how it read before per-field tracking.
+    locationProvenance: Object.fromEntries(
+      ['lat', 'lon', 'location_label', 'location_accuracy_m', 'location_capture_method', 'admin_area', 'country', 'water_body']
+        .filter((field) => eventRow[field] != null)
+        .map((field) => [field, (eventRow.location_provenance || {})[field] || eventRow.location_source])
+    ),
     subjects: subjects.rows.map((r) => {
       const attributes = r.attributes || {};
       const storedProvenance = r.attribute_provenance || {};
@@ -825,6 +873,15 @@ export async function getEventDetail(eventId) {
       notes: r.notes,
       source: r.source,
       recordedAt: r.recorded_at
+    })),
+    // The detailed signals behind verificationState (spec §14) — no score,
+    // just which way each signal leans and why. Ordered weakens-first: the
+    // reasons to look closer are the ones a verifier needs to see.
+    confidenceSignals: confidenceSignals.rows.map((r) => ({
+      signal: r.signal,
+      stance: r.stance,
+      detail: r.detail,
+      computedAt: r.computed_at
     }))
   };
 }
@@ -1284,6 +1341,11 @@ export async function verifyEvent(eventId, { verifierId, outcome, notes }) {
   recordVerificationOnChain(verificationRows[0].verification_id).catch((proofErr) =>
     console.error('[onchainProof] background submission failed for verification', verificationRows[0].verification_id, ':', proofErr.message)
   );
+
+  // A verifier acting on the event changes the verifier_review signal (and,
+  // for an adverse outcome, contradictory_evidence) — recompute so the
+  // stored signals explain the state the event is actually in now (spec §14).
+  await computeConfidenceSignals(eventId);
 
   if (outcome === 'verified') {
     if (VERIFICATION_STATE_RANK.verified > VERIFICATION_STATE_RANK[current.verification_state]) {

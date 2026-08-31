@@ -17,6 +17,28 @@ export function authenticate(req, res, next) {
   }
 }
 
+/**
+ * attachUserIfPresent — decodes a token when one is supplied, and carries
+ * on regardless when it isn't. For routes that are legitimately reachable
+ * both signed-in and signed-out and want to behave differently for each:
+ * creating an organization happens both from signup (no token yet) and
+ * from the submit form (token present, and the creator should be enrolled
+ * as a member). An invalid token is ignored rather than rejected — this
+ * middleware grants nothing on its own, so the route simply proceeds as
+ * anonymous.
+ */
+export function attachUserIfPresent(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith('Bearer ')) {
+    try {
+      req.user = jwt.verify(authHeader.split(' ')[1], env.jwtSecret);
+    } catch {
+      // Anonymous — deliberately not a 401 on a route that allows it.
+    }
+  }
+  next();
+}
+
 export function authorizeRoles(...roles) {
   return (req, res, next) => {
     if (!req.user || !roles.includes(req.user.role)) {
