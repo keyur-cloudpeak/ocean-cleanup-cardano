@@ -553,6 +553,49 @@ CREATE TABLE IF NOT EXISTS event_impact (
 
 CREATE INDEX IF NOT EXISTS idx_event_impact_event_id ON event_impact (event_id);
 
+-- MEASUREMENT as its own entity (spec §26) — a structured environmental
+-- reading (water quality, conditions), distinct from event_subjects'
+-- generic {value, unit} JSONB attributes (which stay as-is for backward
+-- compatibility and simple display). One row per parameter reading, so
+-- each carries its own instrument/method/notes rather than one shared
+-- value for an entire submission with several readings in it.
+CREATE TABLE IF NOT EXISTS measurements (
+    measurement_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id          UUID NOT NULL REFERENCES environmental_events(event_id) ON DELETE CASCADE,
+    event_subject_id  UUID REFERENCES event_subjects(event_subject_id) ON DELETE CASCADE,
+    parameter         TEXT NOT NULL,
+    value             NUMERIC(14, 4) NOT NULL,
+    unit              TEXT,
+    instrument        TEXT,
+    method            TEXT CHECK (method IS NULL OR method IN ('instrument', 'informal')),
+    notes             TEXT,
+    source            provenance_source NOT NULL DEFAULT 'user_provided',
+    recorded_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_measurements_event_id ON measurements (event_id);
+
+-- EXTERNAL_ENRICHMENT as its own entity (spec §26) — an audit trail of
+-- what an external lookup (reverse-geocode, weather archive) actually
+-- returned, mirroring how ai_inferences already logs what the AI
+-- classifier returned regardless of whether the contributor ever
+-- confirmed it. event_id/activity_id are both nullable and either may be
+-- set: location enrichment always has an event_id in scope; weather
+-- backfill runs before the event is created, so it logs against
+-- activity_id instead.
+CREATE TABLE IF NOT EXISTS external_enrichments (
+    enrichment_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id       UUID REFERENCES environmental_events(event_id) ON DELETE CASCADE,
+    activity_id    TEXT REFERENCES activities(id) ON DELETE CASCADE,
+    source_system  TEXT NOT NULL,
+    input          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    result         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    fetched_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_external_enrichments_event_id ON external_enrichments (event_id);
+CREATE INDEX IF NOT EXISTS idx_external_enrichments_activity_id ON external_enrichments (activity_id);
+
 -- Seed the taxonomy. ON CONFLICT DO NOTHING makes this safe to re-run as
 -- the schema evolves and new subjects are added to the lists below.
 INSERT INTO subjects (family, code, label) VALUES

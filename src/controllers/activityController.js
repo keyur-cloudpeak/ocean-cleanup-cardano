@@ -14,6 +14,7 @@ import { createEventForActivity, recordReviewOnEvent } from '../services/environ
 import { runIntakePipeline } from '../services/verifierService.js';
 import { awardApprovalPoints } from '../services/rewardLedgerService.js';
 import { fetchWeatherContext } from '../services/weatherService.js';
+import { logExternalEnrichment } from '../services/externalEnrichmentService.js';
 import { parseBase64Image, uploadMultipleFiles, uploadMultipleBase64 } from '../utils/mediaUpload.js';
 
 // Evidence types the intake UI can tag a submission's attached media as —
@@ -36,11 +37,21 @@ import asyncHandler from '../middleware/asyncHandler.js';
 function backfillWeatherInBackground(activity) {
   if (activity.lat == null || activity.lon == null) return;
   fetchWeatherContext(activity.lat, activity.lon, activity.timestamp)
-    .then((weather) => updateActivity(activity.id, {
-      weatherConditions: weather.weatherConditions,
-      daysSinceRain: weather.daysSinceRain,
-      windSpeedKmh: weather.windSpeedKmh
-    }))
+    .then((weather) => {
+      // EXTERNAL_ENRICHMENT audit trail (spec §26) — logged against
+      // activity_id, not event_id: this runs before createEventForActivity
+      // does, so there's no event row yet to reference.
+      logExternalEnrichment({
+        activityId: activity.id, sourceSystem: 'open-meteo',
+        input: { lat: activity.lat, lon: activity.lon, date: activity.timestamp },
+        result: weather
+      });
+      return updateActivity(activity.id, {
+        weatherConditions: weather.weatherConditions,
+        daysSinceRain: weather.daysSinceRain,
+        windSpeedKmh: weather.windSpeedKmh
+      });
+    })
     .catch((err) =>
       console.error('[weatherService] background update failed for activity', activity.id, ':', err.message)
     );

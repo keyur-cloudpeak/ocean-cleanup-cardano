@@ -5,6 +5,7 @@ import { findUserById } from './userService.js';
 import { sanitizeSubjectAttributes } from '../constants/subjectAttributes.js';
 import { recordVerificationOnChain } from './onchainProofService.js';
 import { fetchLocationContext } from './locationEnrichmentService.js';
+import { logExternalEnrichment } from './externalEnrichmentService.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -138,6 +139,7 @@ export async function createEventForActivity(activity, options = {}) {
 
       return {
         subjectId: row.subject_id,
+        code: row.code,
         confidence: match?.confidence ?? null,
         source,
         attributes,
@@ -153,7 +155,7 @@ export async function createEventForActivity(activity, options = {}) {
     subjectsToInsert = rows.map((row) => {
       const attributes = { quantity_kg: Number(activity.quantity) || 0 };
       return {
-        subjectId: row.subject_id, confidence: null, source: 'user_provided',
+        subjectId: row.subject_id, code: subjectCode, confidence: null, source: 'user_provided',
         attributes,
         attributeProvenance: withAttributeProvenance(attributes, 'user_provided', quantityProvenance ? { quantity_kg: quantityProvenance } : {})
       };
@@ -213,9 +215,17 @@ export async function createEventForActivity(activity, options = {}) {
   // third-party geocoder must never delay or fail event creation. Only
   // patches columns the lookup actually resolved, so a partial result
   // (e.g. country but no named water body) doesn't overwrite the others.
+  // The lookup itself is logged either way — a "found nothing" result is
+  // still part of the audit trail, not just a successful one.
   if (activity.lat != null && activity.lon != null) {
     fetchLocationContext(activity.lat, activity.lon)
-      .then(({ adminArea, country, waterBody }) => {
+      .then((locationContext) => {
+        const { adminArea, country, waterBody } = locationContext;
+        logExternalEnrichment({
+          eventId, sourceSystem: 'nominatim',
+          input: { lat: activity.lat, lon: activity.lon },
+          result: locationContext
+        });
         if (adminArea == null && country == null && waterBody == null) return;
         return query(
           `UPDATE environmental_events
@@ -228,11 +238,30 @@ export async function createEventForActivity(activity, options = {}) {
   }
 
   for (const subject of subjectsToInsert) {
-    await query(
+    const { rows: subjectRows } = await query(
       `INSERT INTO event_subjects (event_id, subject_id, attributes, attribute_provenance, source, confidence)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING event_subject_id`,
       [eventId, subject.subjectId, JSON.stringify(subject.attributes), JSON.stringify(subject.attributeProvenance), subject.source, subject.confidence]
     );
+
+    // MEASUREMENT as its own entity (spec §26) — any subject carrying a
+    // numeric `value` (today: the water-family measurement intake) also
+    // gets a structured row here, alongside the JSONB attributes it
+    // already has. `instrument`/`notes` come from the submission as a
+    // whole (the measurement intake collects one of each per submission,
+    // not per parameter) rather than being invented per-reading.
+    if (Number.isFinite(subject.attributes?.value)) {
+      await query(
+        `INSERT INTO measurements (event_id, event_subject_id, parameter, value, unit, instrument, method, notes, source)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          eventId, subjectRows[0].event_subject_id, subject.code, subject.attributes.value, subject.attributes.unit || null,
+          activity.instrument || null, subject.source === 'system_captured' ? 'instrument' : 'informal',
+          activity.notes || null, subject.source
+        ]
+      );
+    }
   }
 
   for (const image of images) {
@@ -620,7 +649,7 @@ export async function getEventDetail(eventId) {
   const eventRow = eventRows[0];
   if (!eventRow) return null;
 
-  const [subjects, evidence, relationshipsFrom, relationshipsTo, stateHistory, verifications, impact] =
+  const [subjects, evidence, relationshipsFrom, relationshipsTo, stateHistory, verifications, impact, measurements] =
     await Promise.all([
       query(
         `SELECT es.event_subject_id, es.subject_id, s.family, s.code, s.label,
@@ -674,6 +703,13 @@ export async function getEventDetail(eventId) {
       query(
         `SELECT impact_id, metric, value, unit, recorded_at
          FROM event_impact
+         WHERE event_id = $1
+         ORDER BY recorded_at ASC`,
+        [eventId]
+      ),
+      query(
+        `SELECT measurement_id, event_subject_id, parameter, value, unit, instrument, method, notes, source, recorded_at
+         FROM measurements
          WHERE event_id = $1
          ORDER BY recorded_at ASC`,
         [eventId]
@@ -773,6 +809,21 @@ export async function getEventDetail(eventId) {
       metric: r.metric,
       value: Number(r.value),
       unit: r.unit,
+      recordedAt: r.recorded_at
+    })),
+    // MEASUREMENT as its own entity (spec §26) — structured readings with
+    // their own instrument/method/notes, distinct from the subject's own
+    // generic {value, unit} attributes.
+    measurements: measurements.rows.map((r) => ({
+      measurementId: r.measurement_id,
+      eventSubjectId: r.event_subject_id,
+      parameter: r.parameter,
+      value: Number(r.value),
+      unit: r.unit,
+      instrument: r.instrument,
+      method: r.method,
+      notes: r.notes,
+      source: r.source,
       recordedAt: r.recorded_at
     }))
   };
