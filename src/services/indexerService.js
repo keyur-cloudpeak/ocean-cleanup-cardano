@@ -1,9 +1,16 @@
-import { monitorPendingProofs } from './onchainProofService.js';
+import { monitorPendingProofs, monitorPendingVerificationProofs } from './onchainProofService.js';
 
 export class IndexerService {
   async sync() {
-    const summary = await monitorPendingProofs();
-    return { status: 'ok', ...summary };
+    const [activitySummary, verificationSummary] = await Promise.all([
+      monitorPendingProofs(),
+      monitorPendingVerificationProofs()
+    ]);
+    return {
+      status: 'ok',
+      ...activitySummary,
+      verifications: verificationSummary
+    };
   }
 }
 

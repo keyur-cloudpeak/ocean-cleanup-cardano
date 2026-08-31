@@ -390,6 +390,28 @@ CREATE TABLE IF NOT EXISTS environmental_events (
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Location architecture (spec §18) — lat/lon/label/source above already
+-- existed; these fill in the rest of the spec's component list.
+-- location_accuracy_m/location_capture_method can only ever come from the
+-- client (only the device knows its own GPS accuracy, or whether the
+-- contributor dragged the pin away from wherever geolocation put it) —
+-- 'manual_pin' is NOT a lesser source, just a different one, matching
+-- spec §18's own point that a deliberately-placed pin is still legitimate,
+-- it just isn't an automatic in-field GPS fix. admin_area/country/
+-- water_body are never client-supplied — they're filled in by
+-- locationEnrichmentService's background reverse-geocode lookup after the
+-- event is created (spec §7.5/§17: EXTERNAL_ENRICHMENT), so a NULL here
+-- means "not yet enriched" or "lookup found nothing", not "known empty".
+-- coastal_region is NOT added — no reliable free gazetteer resolves an
+-- informal region name like "Gulf Coast" from a lat/lon, and inventing one
+-- would violate spec §17 ("AI/enrichment must not silently invent facts").
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS location_accuracy_m NUMERIC(10, 2);
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS location_capture_method TEXT
+    CHECK (location_capture_method IS NULL OR location_capture_method IN ('gps', 'manual_pin', 'unknown'));
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS admin_area TEXT;
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS country TEXT;
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS water_body TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_environmental_events_event_state ON environmental_events (event_state);
 CREATE INDEX IF NOT EXISTS idx_environmental_events_verification_state ON environmental_events (verification_state);
 CREATE INDEX IF NOT EXISTS idx_environmental_events_legacy_activity_id ON environmental_events (legacy_activity_id);
@@ -411,10 +433,19 @@ CREATE TABLE IF NOT EXISTS event_subjects (
     event_id            UUID NOT NULL REFERENCES environmental_events(event_id) ON DELETE CASCADE,
     subject_id          UUID NOT NULL REFERENCES subjects(subject_id),
     attributes           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    attribute_provenance JSONB NOT NULL DEFAULT '{}'::jsonb,
     source               provenance_source NOT NULL DEFAULT 'user_provided',
     confidence           NUMERIC(4, 3) CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Additive: `source` above is the subject-level default (spec §17 fallback);
+-- `attribute_provenance` is a { attributeKey: provenance_source } map so an
+-- individual field — e.g. a contributor-corrected `quantity_kg` on an
+-- otherwise AI-inferred subject — can carry its own provenance instead of
+-- inheriting the subject's. Keys absent from the map (older rows, or
+-- attributes nobody overrode) fall back to `source` at read time.
+ALTER TABLE event_subjects ADD COLUMN IF NOT EXISTS attribute_provenance JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE INDEX IF NOT EXISTS idx_event_subjects_event_id ON event_subjects (event_id);
 CREATE INDEX IF NOT EXISTS idx_event_subjects_subject_id ON event_subjects (subject_id);
@@ -496,6 +527,17 @@ CREATE TABLE IF NOT EXISTS verifications (
 );
 
 CREATE INDEX IF NOT EXISTS idx_verifications_event_id ON verifications (event_id, created_at DESC);
+
+-- Proof lifecycle columns to match `activities` (spec §21) — a verifier
+-- attestation gets the same tamper-evident on-chain proof an approved
+-- activity does. This is what actually closes the gap for action-events
+-- (created via Plan Action) that have no legacy_activity_id at all and so,
+-- until now, could never get a proof of any kind — a verification is the
+-- only event through their lifecycle that reliably exists to hang one off.
+ALTER TABLE verifications ADD COLUMN IF NOT EXISTS onchain_recorded_at TIMESTAMPTZ;
+ALTER TABLE verifications ADD COLUMN IF NOT EXISTS onchain_status TEXT;
+ALTER TABLE verifications ADD COLUMN IF NOT EXISTS onchain_submission_started_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_verifications_onchain_status ON verifications (onchain_status);
 
 -- What changed as a consequence of an event (spec §4, §23) — e.g. kg of
 -- debris removed, animals rescued. Kept as a metric ledger rather than
@@ -608,6 +650,17 @@ INSERT INTO subjects (family, code, label) VALUES
     ('human_action', 'infrastructure_intervention', 'Infrastructure intervention'),
     ('human_action', 'community_event', 'Community event'),
     ('human_action', 'policy_enforcement', 'Policy / enforcement activity')
+ON CONFLICT (family, code) DO NOTHING;
+
+-- Habitat "associated phenomena" (spec §7.4) — named explicitly in the
+-- spec text (bleaching is literally spec §3's "Coral bleaching documented"
+-- example event) but missing from the original seed above, which only
+-- covered habitat *types*, not the phenomena that can happen to them.
+INSERT INTO subjects (family, code, label) VALUES
+    ('habitat', 'bleaching', 'Bleaching'),
+    ('habitat', 'sedimentation', 'Sedimentation'),
+    ('habitat', 'habitat_destruction', 'Habitat destruction'),
+    ('habitat', 'vegetation_loss', 'Vegetation loss')
 ON CONFLICT (family, code) DO NOTHING;
 
 

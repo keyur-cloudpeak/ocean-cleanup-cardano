@@ -1,6 +1,7 @@
 import {
   listEvents, getEventDetail, listSubjects, planActionForEvent, completeAction, linkEvents, verifyEvent
 } from '../services/environmentalEventService.js';
+import { getVerificationProof } from '../services/onchainProofService.js';
 import { uploadMultipleFiles, uploadMultipleBase64 } from '../utils/mediaUpload.js';
 import asyncHandler from '../middleware/asyncHandler.js';
 
@@ -11,6 +12,11 @@ async function list(req, res) {
     subjectFamily: req.query.subjectFamily,
     contributorId: req.query.contributorId,
     organizationId: req.query.organizationId,
+    // spec §20: verifier queue signals — a comma-separated list of event
+    // IDs (query strings can't carry a real array), e.g.
+    // ?eventIds=<id1>,<id2> to resolve several already-known events'
+    // corroboration/sanity signals in one request.
+    eventIds: typeof req.query.eventIds === 'string' ? req.query.eventIds.split(',').map((s) => s.trim()) : undefined,
     limit: req.query.limit,
     offset: req.query.offset
   });
@@ -141,6 +147,26 @@ async function relate(req, res) {
   res.status(201).json({ ok: true, relationshipId, event });
 }
 
+/**
+ * GET /api/events/verifications/:verificationId/proof
+ * Mirrors GET /api/activities/:id/proof (spec §21) for a verifier
+ * attestation instead of the original activity — the proof an
+ * action-event's completion actually gets, since it has no legacy
+ * activity of its own to be proved through.
+ */
+async function verificationProof(req, res) {
+  try {
+    const proofData = await getVerificationProof(req.params.verificationId);
+    res.json({ ok: true, proof: proofData });
+  } catch (error) {
+    if (error.message?.includes('not found')) {
+      return res.status(404).json({ ok: false, error: error.message });
+    }
+    console.error('Get verification proof error:', error);
+    res.status(500).json({ ok: false, error: 'Failed to retrieve on-chain proof' });
+  }
+}
+
 export default {
   list: asyncHandler(list),
   getSubjects: asyncHandler(getSubjects),
@@ -148,5 +174,6 @@ export default {
   planAction: asyncHandler(planAction),
   complete: asyncHandler(complete),
   verify: asyncHandler(verify),
-  relate: asyncHandler(relate)
+  relate: asyncHandler(relate),
+  verificationProof: asyncHandler(verificationProof)
 };

@@ -19,6 +19,13 @@ import { parseBase64Image, uploadMultipleFiles, uploadMultipleBase64 } from '../
 // Evidence types the intake UI can tag a submission's attached media as —
 // anything else (including the default, absent field) falls back to 'photo'.
 const SUPPORTED_MEDIA_TYPES = new Set(['video', 'document', 'dataset', 'audio']);
+
+// Mirrors the `provenance_source` Postgres enum (db/schema.sql) — validated
+// here since attribute_provenance is a JSONB map, not a typed column, so
+// nothing else stops a bad client value from being stored.
+const PROVENANCE_SOURCES = new Set([
+  'user_provided', 'system_captured', 'ai_inferred', 'external_enrichment', 'verifier_confirmed'
+]);
 import asyncHandler from '../middleware/asyncHandler.js';
 
 // Fire-and-forget: looks up historical weather for the activity's site/date
@@ -78,6 +85,15 @@ async function create(req, res) {
       rawText,
       intakeMethod,
       captureSource,
+      // Set when the contributor edited an AI-estimated quantity by hand
+      // before submitting (spec §17) — lets the resulting event_subjects
+      // row record `quantity_kg` as user_provided instead of inheriting
+      // the ai_inferred subject source it would otherwise default to.
+      quantityProvenance,
+      // Location architecture (spec §18) — only the client's Geolocation
+      // API knows either of these; the server can't reconstruct them.
+      locationAccuracy,
+      locationCaptureMethod,
       // 'video' | 'document' | 'dataset' | 'audio' when the attachment
       // isn't a still photo — tags the resulting evidence row correctly
       // instead of defaulting to 'photo'. These always arrive via
@@ -166,7 +182,9 @@ async function create(req, res) {
     try {
       createdEventId = await createEventForActivity(activity, {
         aiSubjects, rawText, intakeMethod, captureSource,
-        evidenceType: SUPPORTED_MEDIA_TYPES.has(mediaType) ? mediaType : 'photo'
+        evidenceType: SUPPORTED_MEDIA_TYPES.has(mediaType) ? mediaType : 'photo',
+        quantityProvenance: PROVENANCE_SOURCES.has(quantityProvenance) ? quantityProvenance : undefined,
+        locationAccuracy, locationCaptureMethod
       });
     } catch (eventError) {
       console.error('[environmentalEventService] failed to create event for activity', activity.id, ':', eventError.message);
