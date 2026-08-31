@@ -14,11 +14,20 @@ import { createEventForActivity, recordReviewOnEvent } from '../services/environ
 import { runIntakePipeline } from '../services/verifierService.js';
 import { awardApprovalPoints } from '../services/rewardLedgerService.js';
 import { fetchWeatherContext } from '../services/weatherService.js';
+import { logExternalEnrichment } from '../services/externalEnrichmentService.js';
+import { resolveContributorOrganization } from '../services/organizationService.js';
 import { parseBase64Image, uploadMultipleFiles, uploadMultipleBase64 } from '../utils/mediaUpload.js';
 
 // Evidence types the intake UI can tag a submission's attached media as —
 // anything else (including the default, absent field) falls back to 'photo'.
 const SUPPORTED_MEDIA_TYPES = new Set(['video', 'document', 'dataset', 'audio']);
+
+// Mirrors the `provenance_source` Postgres enum (db/schema.sql) — validated
+// here since attribute_provenance is a JSONB map, not a typed column, so
+// nothing else stops a bad client value from being stored.
+const PROVENANCE_SOURCES = new Set([
+  'user_provided', 'system_captured', 'ai_inferred', 'external_enrichment', 'verifier_confirmed'
+]);
 import asyncHandler from '../middleware/asyncHandler.js';
 
 // Fire-and-forget: looks up historical weather for the activity's site/date
@@ -29,11 +38,21 @@ import asyncHandler from '../middleware/asyncHandler.js';
 function backfillWeatherInBackground(activity) {
   if (activity.lat == null || activity.lon == null) return;
   fetchWeatherContext(activity.lat, activity.lon, activity.timestamp)
-    .then((weather) => updateActivity(activity.id, {
-      weatherConditions: weather.weatherConditions,
-      daysSinceRain: weather.daysSinceRain,
-      windSpeedKmh: weather.windSpeedKmh
-    }))
+    .then((weather) => {
+      // EXTERNAL_ENRICHMENT audit trail (spec §26) — logged against
+      // activity_id, not event_id: this runs before createEventForActivity
+      // does, so there's no event row yet to reference.
+      logExternalEnrichment({
+        activityId: activity.id, sourceSystem: 'open-meteo',
+        input: { lat: activity.lat, lon: activity.lon, date: activity.timestamp },
+        result: weather
+      });
+      return updateActivity(activity.id, {
+        weatherConditions: weather.weatherConditions,
+        daysSinceRain: weather.daysSinceRain,
+        windSpeedKmh: weather.windSpeedKmh
+      });
+    })
     .catch((err) =>
       console.error('[weatherService] background update failed for activity', activity.id, ':', err.message)
     );
@@ -78,6 +97,15 @@ async function create(req, res) {
       rawText,
       intakeMethod,
       captureSource,
+      // Set when the contributor edited an AI-estimated quantity by hand
+      // before submitting (spec §17) — lets the resulting event_subjects
+      // row record `quantity_kg` as user_provided instead of inheriting
+      // the ai_inferred subject source it would otherwise default to.
+      quantityProvenance,
+      // Location architecture (spec §18) — only the client's Geolocation
+      // API knows either of these; the server can't reconstruct them.
+      locationAccuracy,
+      locationCaptureMethod,
       // 'video' | 'document' | 'dataset' | 'audio' when the attachment
       // isn't a still photo — tags the resulting evidence row correctly
       // instead of defaulting to 'photo'. These always arrive via
@@ -91,6 +119,15 @@ async function create(req, res) {
     // missing one.
     if (!category || !location || quantity === undefined || quantity === null || quantity === '') {
       return res.status(400).json({ ok: false, error: 'Missing required fields' });
+    }
+
+    // spec §19 — derive the org from who's signed in when the request
+    // doesn't name one, and refuse a named one the contributor isn't
+    // actually a member of. Previously any organizationId in the body was
+    // taken at face value.
+    const orgContext = await resolveContributorOrganization(req.user.id, organizationId);
+    if (orgContext.error) {
+      return res.status(403).json({ ok: false, error: orgContext.error });
     }
 
     let imageCids = [];
@@ -127,7 +164,7 @@ async function create(req, res) {
       quantity,
       evidenceHash,
       contributorId: req.user.id,
-      organizationId,
+      organizationId: orgContext.organizationId,
       imageCids,
       imageIpfsUrls,
       imageGatewayUrls,
@@ -166,7 +203,9 @@ async function create(req, res) {
     try {
       createdEventId = await createEventForActivity(activity, {
         aiSubjects, rawText, intakeMethod, captureSource,
-        evidenceType: SUPPORTED_MEDIA_TYPES.has(mediaType) ? mediaType : 'photo'
+        evidenceType: SUPPORTED_MEDIA_TYPES.has(mediaType) ? mediaType : 'photo',
+        quantityProvenance: PROVENANCE_SOURCES.has(quantityProvenance) ? quantityProvenance : undefined,
+        locationAccuracy, locationCaptureMethod
       });
     } catch (eventError) {
       console.error('[environmentalEventService] failed to create event for activity', activity.id, ':', eventError.message);
@@ -240,6 +279,18 @@ async function update(req, res) {
       brands_identified,
       surveyLengthM, surveyAreaSqm, surveyMethod, debrisSource
     } = req.body;
+
+    // spec §19 — same membership check as create, but deliberately NOT the
+    // same fallback: here `undefined` means "leave this field alone", so
+    // deriving the contributor's org would silently re-attribute an
+    // existing activity on any unrelated edit. Only a value the caller
+    // actually sent is validated.
+    if (organizationId !== undefined) {
+      const orgContext = await resolveContributorOrganization(req.user.id, organizationId);
+      if (orgContext.error) {
+        return res.status(403).json({ ok: false, error: orgContext.error });
+      }
+    }
 
     const updates = {
       category,

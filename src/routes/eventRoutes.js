@@ -11,6 +11,13 @@ const upload = multer({ storage: multer.memoryStorage() });
 // /subjects must be registered before /:id or Express would treat
 // "subjects" as an :id value.
 router.get('/subjects', eventController.getSubjects);
+// Mirrors GET /api/activities/:id/proof (spec §21) — a verification's own
+// tamper-evident proof, the only one an action-event ever gets. Registered
+// here (not under /:id) since verifications aren't otherwise their own
+// route resource; the 3-segment path doesn't collide with /:id regardless
+// of registration order, but it's kept alongside /subjects for the same
+// "declare the more specific path explicitly" reasoning.
+router.get('/verifications/:verificationId/proof', eventController.verificationProof);
 router.get('/', eventController.list);
 router.get('/:id', eventController.getById);
 

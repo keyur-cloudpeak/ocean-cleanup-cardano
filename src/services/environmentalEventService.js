@@ -2,6 +2,11 @@ import { query } from '../config/connection.js';
 import { toNumber } from '../utils/normalize.js';
 import { notifyClosure } from './notificationService.js';
 import { findUserById } from './userService.js';
+import { sanitizeSubjectAttributes } from '../constants/subjectAttributes.js';
+import { recordVerificationOnChain } from './onchainProofService.js';
+import { fetchLocationContext } from './locationEnrichmentService.js';
+import { logExternalEnrichment } from './externalEnrichmentService.js';
+import { computeConfidenceSignals } from './confidenceSignalService.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -63,8 +68,33 @@ function imageArrays(activity) {
  * as best-effort — catch, log, and continue on failure, never let it
  * block or fail activity submission.
  */
+const LOCATION_CAPTURE_METHODS = new Set(['gps', 'manual_pin', 'unknown']);
+
 export async function createEventForActivity(activity, options = {}) {
-  const { aiSubjects, rawText, captureSource, intakeMethod, evidenceType } = options;
+  const {
+    aiSubjects, rawText, captureSource, intakeMethod, evidenceType, quantityProvenance,
+    // Location architecture (spec §18) — only the client can know these
+    // (device GPS accuracy, or whether the contributor moved the pin off
+    // wherever geolocation first placed it), so unlike admin_area/country/
+    // water_body below they're taken as given rather than derived here.
+    locationAccuracy, locationCaptureMethod
+  } = options;
+
+  // Field-level provenance (spec §17): every key in `attributes` gets its
+  // own entry in `attributeProvenance` rather than inheriting the
+  // subject's single `source` wholesale. Most keys still just take the
+  // subject's source (e.g. a measurement's `value`/`unit` really do share
+  // one provenance — they came from the same instrument reading in the
+  // same submission) — `overrides` is only for a field whose provenance
+  // the caller actually knows differs, such as an AI-estimated quantity
+  // the contributor then edited by hand.
+  function withAttributeProvenance(attributes, source, overrides = {}) {
+    const provenance = { ...overrides };
+    for (const key of Object.keys(attributes)) {
+      if (!(key in provenance)) provenance[key] = source;
+    }
+    return provenance;
+  }
 
   // AI-inferred subjects (spec §16-17: multi-subject, provenance-tagged)
   // take priority when present. Falls back to the single category-derived
@@ -83,11 +113,38 @@ export async function createEventForActivity(activity, options = {}) {
       // which knows its own provenance — instrument reading vs. informal
       // observation) can override source/attributes per subject; AI intake
       // leaves both unset and gets the historical defaults.
+      const source = match?.source || 'ai_inferred';
+      // The vocabulary (spec §7.3-7.4 condition enums, §7.1 free-text
+      // severity/hazard) is re-validated here rather than trusted from the
+      // request body — aiInferenceService already applies the same check
+      // to what the model returns, but this endpoint accepts client-built
+      // `attributes` too (measurement intake, and anything a future
+      // manual-edit UI sends), so nothing reaches the DB unsanitized.
+      const ontologyAttributes = sanitizeSubjectAttributes(row.family, match?.attributes);
+      // A measurement-intake subject supplies its own attributes wholesale
+      // (e.g. {value, unit}) and isn't part of the ontology's condition/
+      // severity vocabulary, so it passes through as-is alongside — not
+      // instead of — whatever sanitizeSubjectAttributes recognized.
+      const passthroughAttributes = match?.attributes && Object.keys(ontologyAttributes).length === 0
+        ? match.attributes : {};
+      // quantity_kg only applies to pollution_waste, and only as a
+      // fallback when the caller didn't already supply one (measurement
+      // intake's {value, unit} has no quantity_kg concept at all).
+      const needsQuantityFallback = row.family === 'pollution_waste'
+        && !('quantity_kg' in passthroughAttributes) && !('quantity_kg' in ontologyAttributes);
+      const attributes = { ...passthroughAttributes, ...ontologyAttributes };
+      if (needsQuantityFallback) attributes.quantity_kg = Number(activity.quantity) || 0;
+
+      const overrides = { ...(match?.attributeProvenance || {}) };
+      if (needsQuantityFallback && quantityProvenance) overrides.quantity_kg = quantityProvenance;
+
       return {
         subjectId: row.subject_id,
+        code: row.code,
         confidence: match?.confidence ?? null,
-        source: match?.source || 'ai_inferred',
-        attributes: match?.attributes || { quantity_kg: Number(activity.quantity) || 0 }
+        source,
+        attributes,
+        attributeProvenance: withAttributeProvenance(attributes, source, overrides)
       };
     });
   } else {
@@ -96,10 +153,14 @@ export async function createEventForActivity(activity, options = {}) {
       `SELECT subject_id FROM subjects WHERE family = 'pollution_waste' AND code = $1`,
       [subjectCode]
     );
-    subjectsToInsert = rows.map((row) => ({
-      subjectId: row.subject_id, confidence: null, source: 'user_provided',
-      attributes: { quantity_kg: Number(activity.quantity) || 0 }
-    }));
+    subjectsToInsert = rows.map((row) => {
+      const attributes = { quantity_kg: Number(activity.quantity) || 0 };
+      return {
+        subjectId: row.subject_id, code: subjectCode, confidence: null, source: 'user_provided',
+        attributes,
+        attributeProvenance: withAttributeProvenance(attributes, 'user_provided', quantityProvenance ? { quantity_kg: quantityProvenance } : {})
+      };
+    });
   }
   if (subjectsToInsert.length === 0) return null;
 
@@ -127,30 +188,111 @@ export async function createEventForActivity(activity, options = {}) {
   // source (spec §14: "GPS captured at source", "direct camera capture")
   // — starts one notch up at 'supported' rather than making the
   // contributor wait for a human to say "yes, this looks real" before it
-  // even reads as evidence-backed. Deliberately coarse (spec §14: "do not
-  // make a fake scientifically precise score immediately") — richer
-  // confidence weighting (AI confidence, contributor reliability, etc.)
-  // stays future work.
+  // even reads as evidence-backed. Deliberately coarse — the richer
+  // signals behind this level (AI confidence, contributor reliability,
+  // instrument quality, contradictory evidence) are recorded separately by
+  // confidenceSignalService rather than compressed into a fake score here
+  // (spec §14: "do not make a fake scientifically precise score").
   const hasGps = activity.lat != null && activity.lon != null;
   const hasPhotoEvidence = images.length > 0;
   const initialVerificationState = hasGps && hasPhotoEvidence ? 'supported' : 'unverified';
 
+  const captureMethod = LOCATION_CAPTURE_METHODS.has(locationCaptureMethod) ? locationCaptureMethod : null;
+  const accuracyMeters = Number.isFinite(Number(locationAccuracy)) ? Number(locationAccuracy) : null;
+
+  // Per-field location provenance (spec §17). lat/lon are system_captured
+  // only when the device actually measured them; a hand-placed pin is
+  // user_provided. The label is whatever the picker's reverse geocode
+  // returned and is read-only in the UI, so it's external_enrichment —
+  // but only when we know the picker was used at all; a legacy or API
+  // submission that just posted a location string stays user_provided
+  // rather than being credited to a lookup that never ran.
+  const locationProvenance = captureMethod
+    ? {
+        lat: captureMethod === 'gps' ? 'system_captured' : 'user_provided',
+        lon: captureMethod === 'gps' ? 'system_captured' : 'user_provided',
+        location_label: 'external_enrichment',
+        location_capture_method: 'system_captured',
+        ...(accuracyMeters != null ? { location_accuracy_m: 'system_captured' } : {})
+      }
+    : {};
+
   const event = await query(
     `INSERT INTO environmental_events
        (contribution_id, legacy_activity_id, event_state, verification_state,
-        occurred_at, lat, lon, location_label, location_source)
-     VALUES ($1, $2, 'observed', $3, $4, $5, $6, $7, 'user_provided')
+        occurred_at, lat, lon, location_label, location_source,
+        location_accuracy_m, location_capture_method, location_provenance)
+     VALUES ($1, $2, 'observed', $3, $4, $5, $6, $7, 'user_provided', $8, $9, $10)
      RETURNING event_id`,
-    [contributionId, activity.id, initialVerificationState, activity.timestamp, activity.lat, activity.lon, activity.location]
+    [
+      contributionId, activity.id, initialVerificationState, activity.timestamp, activity.lat, activity.lon, activity.location,
+      accuracyMeters, captureMethod, JSON.stringify(locationProvenance)
+    ]
   );
   const eventId = event.rows[0].event_id;
 
+  // Fire-and-forget (spec §17/§7.5: EXTERNAL_ENRICHMENT) — same contract as
+  // backfillWeatherInBackground in activityController.js: a slow or failing
+  // third-party geocoder must never delay or fail event creation. Only
+  // patches columns the lookup actually resolved, so a partial result
+  // (e.g. country but no named water body) doesn't overwrite the others.
+  // The lookup itself is logged either way — a "found nothing" result is
+  // still part of the audit trail, not just a successful one.
+  if (activity.lat != null && activity.lon != null) {
+    fetchLocationContext(activity.lat, activity.lon)
+      .then((locationContext) => {
+        const { adminArea, country, waterBody } = locationContext;
+        logExternalEnrichment({
+          eventId, sourceSystem: 'nominatim',
+          input: { lat: activity.lat, lon: activity.lon },
+          result: locationContext
+        });
+        if (adminArea == null && country == null && waterBody == null) return;
+        // Each field this lookup actually resolved is recorded as
+        // external_enrichment (spec §17) — the whole reason location
+        // provenance had to become per-field: these arrive from a
+        // third-party geocoder, not from the contributor.
+        const enrichedProvenance = {
+          ...(adminArea != null ? { admin_area: 'external_enrichment' } : {}),
+          ...(country != null ? { country: 'external_enrichment' } : {}),
+          ...(waterBody != null ? { water_body: 'external_enrichment' } : {})
+        };
+        return query(
+          `UPDATE environmental_events
+           SET admin_area = COALESCE($2, admin_area), country = COALESCE($3, country), water_body = COALESCE($4, water_body),
+               location_provenance = location_provenance || $5::jsonb
+           WHERE event_id = $1`,
+          [eventId, adminArea, country, waterBody, JSON.stringify(enrichedProvenance)]
+        );
+      })
+      .catch((err) => console.error('[locationEnrichmentService] background update failed for event', eventId, ':', err.message));
+  }
+
   for (const subject of subjectsToInsert) {
-    await query(
-      `INSERT INTO event_subjects (event_id, subject_id, attributes, source, confidence)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [eventId, subject.subjectId, JSON.stringify(subject.attributes), subject.source, subject.confidence]
+    const { rows: subjectRows } = await query(
+      `INSERT INTO event_subjects (event_id, subject_id, attributes, attribute_provenance, source, confidence)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING event_subject_id`,
+      [eventId, subject.subjectId, JSON.stringify(subject.attributes), JSON.stringify(subject.attributeProvenance), subject.source, subject.confidence]
     );
+
+    // MEASUREMENT as its own entity (spec §26) — any subject carrying a
+    // numeric `value` (today: the water-family measurement intake) also
+    // gets a structured row here, alongside the JSONB attributes it
+    // already has. `instrument`/`notes` come from the submission as a
+    // whole (the measurement intake collects one of each per submission,
+    // not per parameter) rather than being invented per-reading.
+    if (Number.isFinite(subject.attributes?.value)) {
+      await query(
+        `INSERT INTO measurements (event_id, event_subject_id, parameter, value, unit, instrument, method, notes, source)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          eventId, subjectRows[0].event_subject_id, subject.code, subject.attributes.value, subject.attributes.unit || null,
+          activity.instrument || null, subject.source === 'system_captured' ? 'instrument' : 'informal',
+          activity.notes || null, subject.source
+        ]
+      );
+    }
   }
 
   for (const image of images) {
@@ -241,7 +383,10 @@ const VERIFICATION_STATE_RANK = { unverified: 0, supported: 1, corroborated: 2, 
  * Deliberately conservative: never downgrades a state, never touches an
  * event that's already 'verified' — that stays a human verifier's call,
  * not this heuristic's — and corroboration alone can only reach
- * 'corroborated', never 'verified'.
+ * 'corroborated'/'needs_attention', never 'verified'. The one exception to
+ * "never downgrades" is 'addressed' → 'reassessed': that's not a downgrade,
+ * it's the spec §11 lifecycle's own next step when a closed report gets a
+ * fresh independent corroborator.
  */
 export async function detectAndLinkCorroboration(eventId) {
   const { rows: selfRows } = await query(
@@ -329,6 +474,32 @@ async function countCorroborators(eventId) {
   return Number(rows[0]?.count || 0);
 }
 
+// The automated escalation ladder this function drives (spec §11:
+// observed → corroborated → needs_attention). action_planned and beyond
+// are only ever set by a human/verifier action elsewhere
+// (planActionForEvent, completeAction, verifyEvent) — a state not in this
+// map is left untouched below rather than climbed past.
+const AUTO_EVENT_STATE_RANK = { observed: 0, corroborated: 1, needs_attention: 2 };
+
+function nextAutoEventState(current, corroboratingCount) {
+  // A closed report that gets a fresh independent corroborator is worth a
+  // second look (spec §11's "Addressed → Reassessed") — someone reporting
+  // the same subject at the same place again after it was marked resolved
+  // is exactly the signal that should reopen it, not get silently ignored
+  // the way it did before this event_state ever moved off 'addressed'.
+  if (current.event_state === 'addressed') return 'reassessed';
+  if (!(current.event_state in AUTO_EVENT_STATE_RANK)) return current.event_state;
+
+  // Two or more independent corroborators is treated as "confirmed enough
+  // that this needs someone to act on it now", not just "seen more than
+  // once" — matching the verification_state threshold for 'corroborated'
+  // just below, one rung further along the event_state ladder.
+  const candidate = corroboratingCount >= 2 ? 'needs_attention' : 'corroborated';
+  return AUTO_EVENT_STATE_RANK[candidate] > AUTO_EVENT_STATE_RANK[current.event_state]
+    ? candidate
+    : current.event_state;
+}
+
 async function bumpTowardCorroborated(current, corroboratingCount) {
   if (current.verification_state === 'verified') return;
 
@@ -337,13 +508,15 @@ async function bumpTowardCorroborated(current, corroboratingCount) {
     VERIFICATION_STATE_RANK[candidateVerificationState] > VERIFICATION_STATE_RANK[current.verification_state]
       ? candidateVerificationState
       : current.verification_state;
-  const nextEventState = current.event_state === 'observed' ? 'corroborated' : current.event_state;
+  const nextEventState = nextAutoEventState(current, corroboratingCount);
 
   if (nextEventState === current.event_state && nextVerificationState === current.verification_state) {
     return;
   }
 
-  const note = `Corroborated by ${corroboratingCount} nearby event(s) within ${CORROBORATION_RADIUS_METERS}m / ${CORROBORATION_WINDOW_DAYS}d`;
+  const note = nextEventState === 'reassessed'
+    ? `Reassessed — ${corroboratingCount} new corroborating report(s) received after this was addressed`
+    : `Corroborated by ${corroboratingCount} nearby event(s) within ${CORROBORATION_RADIUS_METERS}m / ${CORROBORATION_WINDOW_DAYS}d`;
   const historyRows = [];
   if (nextEventState !== current.event_state) {
     historyRows.push(['event_state', current.event_state, nextEventState]);
@@ -367,6 +540,16 @@ async function bumpTowardCorroborated(current, corroboratingCount) {
 }
 
 function mapEventSummaryRow(row) {
+  // Same three checks runIntakePipeline computes at intake time (spec
+  // §20), recomputed at read time instead of stored — cheap enough as
+  // scalar subqueries, and it means a verifier always sees the event's
+  // *current* completeness rather than a snapshot from whenever it was
+  // first submitted.
+  const sanityFlags = [];
+  if (row.lat == null || row.lon == null) sanityFlags.push('missing_location');
+  if (Number(row.evidence_count) === 0) sanityFlags.push('no_evidence');
+  if (!row.subjects || row.subjects.length === 0) sanityFlags.push('no_subject');
+
   return {
     eventId: row.event_id,
     legacyActivityId: row.legacy_activity_id,
@@ -381,7 +564,9 @@ function mapEventSummaryRow(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     organizationId: row.organization_id,
-    subjects: row.subjects || []
+    subjects: row.subjects || [],
+    corroborationCount: Number(row.corroboration_count) || 0,
+    sanityFlags
   };
 }
 
@@ -389,8 +574,12 @@ function mapEventSummaryRow(row) {
  * listEvents — a page of events with their subjects rolled up, newest
  * first. Filters are optional and silently ignored if the value isn't a
  * real enum/family member, rather than erroring on a typo'd query param.
+ * `eventIds` (spec §20: verifier queue signals) lets a caller ask for
+ * summaries of an exact, already-known set of events in one round trip —
+ * e.g. the legacy activity queue resolving each pending activity's linked
+ * event — rather than one request per event.
  */
-export async function listEvents({ eventState, verificationState, subjectFamily, contributorId, organizationId, limit, offset } = {}) {
+export async function listEvents({ eventState, verificationState, subjectFamily, contributorId, organizationId, eventIds, limit, offset } = {}) {
   const conditions = [];
   const params = [];
 
@@ -424,9 +613,16 @@ export async function listEvents({ eventState, verificationState, subjectFamily,
       WHERE es2.event_id = e.event_id AND s2.family = $${params.length}
     )`);
   }
+  const validEventIds = Array.isArray(eventIds) ? eventIds.filter((id) => UUID_PATTERN.test(id)) : [];
+  if (validEventIds.length > 0) {
+    params.push(validEventIds);
+    conditions.push(`e.event_id = ANY($${params.length}::uuid[])`);
+  }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const safeLimit = Math.min(Math.max(toNumber(limit) || 50, 1), 200);
+  // eventIds callers want every match in one shot, not a paginated page of
+  // an already-bounded set — 200 stays the ceiling either way.
+  const safeLimit = validEventIds.length > 0 ? Math.min(validEventIds.length, 200) : Math.min(Math.max(toNumber(limit) || 50, 1), 200);
   const safeOffset = Math.max(toNumber(offset) || 0, 0);
   params.push(safeLimit, safeOffset);
 
@@ -438,7 +634,15 @@ export async function listEvents({ eventState, verificationState, subjectFamily,
                 'subjectId', s.subject_id, 'family', s.family, 'code', s.code, 'label', s.label
               )) FILTER (WHERE s.subject_id IS NOT NULL),
               '[]'
-            ) AS subjects
+            ) AS subjects,
+            (SELECT COUNT(*) FROM evidence ev WHERE ev.event_id = e.event_id) AS evidence_count,
+            (SELECT COUNT(DISTINCT other_id) FROM (
+               SELECT to_event_id AS other_id FROM event_relationships
+               WHERE from_event_id = e.event_id AND relationship_type = 'corroborates'
+               UNION
+               SELECT from_event_id AS other_id FROM event_relationships
+               WHERE to_event_id = e.event_id AND relationship_type = 'corroborates'
+             ) AS corroborators) AS corroboration_count
      FROM environmental_events e
      LEFT JOIN contributions c ON c.contribution_id = e.contribution_id
      LEFT JOIN event_subjects es ON es.event_id = e.event_id
@@ -466,7 +670,9 @@ export async function getEventDetail(eventId) {
 
   const { rows: eventRows } = await query(
     `SELECT event_id, legacy_activity_id, title, description, event_state, verification_state,
-            occurred_at, lat, lon, location_label, location_source, created_at, updated_at
+            occurred_at, lat, lon, location_label, location_source, location_provenance,
+            location_accuracy_m, location_capture_method, admin_area, country, water_body,
+            created_at, updated_at
      FROM environmental_events
      WHERE event_id = $1`,
     [eventId]
@@ -474,11 +680,11 @@ export async function getEventDetail(eventId) {
   const eventRow = eventRows[0];
   if (!eventRow) return null;
 
-  const [subjects, evidence, relationshipsFrom, relationshipsTo, stateHistory, verifications, impact] =
+  const [subjects, evidence, relationshipsFrom, relationshipsTo, stateHistory, verifications, impact, measurements, confidenceSignals] =
     await Promise.all([
       query(
         `SELECT es.event_subject_id, es.subject_id, s.family, s.code, s.label,
-                es.attributes, es.source, es.confidence, es.created_at
+                es.attributes, es.attribute_provenance, es.source, es.confidence, es.created_at
          FROM event_subjects es
          JOIN subjects s ON s.subject_id = es.subject_id
          WHERE es.event_id = $1
@@ -531,23 +737,67 @@ export async function getEventDetail(eventId) {
          WHERE event_id = $1
          ORDER BY recorded_at ASC`,
         [eventId]
+      ),
+      query(
+        `SELECT measurement_id, event_subject_id, parameter, value, unit, instrument, method, notes, source, recorded_at
+         FROM measurements
+         WHERE event_id = $1
+         ORDER BY recorded_at ASC`,
+        [eventId]
+      ),
+      query(
+        `SELECT signal, stance, detail, computed_at
+         FROM confidence_signals
+         WHERE event_id = $1
+         ORDER BY
+           CASE stance WHEN 'weakens' THEN 0 WHEN 'supports' THEN 1 ELSE 2 END,
+           signal ASC`,
+        [eventId]
       )
     ]);
 
   return {
     ...mapEventSummaryRow({ ...eventRow, subjects: undefined }),
     locationSource: eventRow.location_source,
-    subjects: subjects.rows.map((r) => ({
-      eventSubjectId: r.event_subject_id,
-      subjectId: r.subject_id,
-      family: r.family,
-      code: r.code,
-      label: r.label,
-      attributes: r.attributes || {},
-      source: r.source,
-      confidence: r.confidence,
-      createdAt: r.created_at
-    })),
+    // spec §18 — accuracy/captureMethod come from the client at intake
+    // (only the device knows these); adminArea/country/waterBody are
+    // filled in later by locationEnrichmentService's background lookup,
+    // so null here can mean "not enriched yet" as well as "not found".
+    locationAccuracyM: eventRow.location_accuracy_m,
+    locationCaptureMethod: eventRow.location_capture_method,
+    adminArea: eventRow.admin_area,
+    country: eventRow.country,
+    waterBody: eventRow.water_body,
+    // Per-field location provenance (spec §17). Any field with no stored
+    // entry — every row written before this column existed — falls back to
+    // location_source, exactly how it read before per-field tracking.
+    locationProvenance: Object.fromEntries(
+      ['lat', 'lon', 'location_label', 'location_accuracy_m', 'location_capture_method', 'admin_area', 'country', 'water_body']
+        .filter((field) => eventRow[field] != null)
+        .map((field) => [field, (eventRow.location_provenance || {})[field] || eventRow.location_source])
+    ),
+    subjects: subjects.rows.map((r) => {
+      const attributes = r.attributes || {};
+      const storedProvenance = r.attribute_provenance || {};
+      // Backfill: a key with no stored provenance (older rows written
+      // before this column existed) reads as the subject's own source,
+      // same as it behaved before per-field tracking existed.
+      const attributeProvenance = Object.fromEntries(
+        Object.keys(attributes).map((key) => [key, storedProvenance[key] || r.source])
+      );
+      return {
+        eventSubjectId: r.event_subject_id,
+        subjectId: r.subject_id,
+        family: r.family,
+        code: r.code,
+        label: r.label,
+        attributes,
+        attributeProvenance,
+        source: r.source,
+        confidence: r.confidence,
+        createdAt: r.created_at
+      };
+    }),
     evidence: evidence.rows.map((r) => ({
       evidenceId: r.evidence_id,
       evidenceType: r.evidence_type,
@@ -608,6 +858,30 @@ export async function getEventDetail(eventId) {
       value: Number(r.value),
       unit: r.unit,
       recordedAt: r.recorded_at
+    })),
+    // MEASUREMENT as its own entity (spec §26) — structured readings with
+    // their own instrument/method/notes, distinct from the subject's own
+    // generic {value, unit} attributes.
+    measurements: measurements.rows.map((r) => ({
+      measurementId: r.measurement_id,
+      eventSubjectId: r.event_subject_id,
+      parameter: r.parameter,
+      value: Number(r.value),
+      unit: r.unit,
+      instrument: r.instrument,
+      method: r.method,
+      notes: r.notes,
+      source: r.source,
+      recordedAt: r.recorded_at
+    })),
+    // The detailed signals behind verificationState (spec §14) — no score,
+    // just which way each signal leans and why. Ordered weakens-first: the
+    // reasons to look closer are the ones a verifier needs to see.
+    confidenceSignals: confidenceSignals.rows.map((r) => ({
+      signal: r.signal,
+      stance: r.stance,
+      detail: r.detail,
+      computedAt: r.computed_at
     }))
   };
 }
@@ -849,8 +1123,10 @@ export async function planActionForEvent(observationEventId, { actorId, subjectC
 
   // Nudge the observation forward if it's still just sitting there —
   // never downgrade, and never override a state a human already pushed
-  // further along (e.g. don't stomp 'disputed').
-  if (['observed', 'corroborated', 'needs_attention'].includes(observation.event_state)) {
+  // further along (e.g. don't stomp 'disputed'). 'reassessed' is included
+  // so a report that was closed, then reopened by a fresh corroborator,
+  // can actually be acted on again instead of being a dead end.
+  if (['observed', 'corroborated', 'needs_attention', 'reassessed'].includes(observation.event_state)) {
     await query(
       `INSERT INTO event_state_history (event_id, field, old_value, new_value, changed_by, note)
        VALUES ($1, 'event_state', $2, 'action_planned', $3, 'Action planned in response')`,
@@ -935,8 +1211,9 @@ export async function completeAction(actionEventId, { actorId, kgRemoved, note, 
     // Bumped to 'action_underway' (the removal has happened, on the
     // ground), not 'addressed' — that final close-out waits for a
     // verifier, in verifyEvent() below. Never touches an observation
-    // that's already past this point (addressed/disputed/etc.).
-    if (['observed', 'corroborated', 'needs_attention', 'action_planned'].includes(obsOldState)) {
+    // that's already past this point (addressed/disputed/etc.). Includes
+    // 'reassessed' so a reopened report can be worked a second time.
+    if (['observed', 'corroborated', 'needs_attention', 'action_planned', 'reassessed'].includes(obsOldState)) {
       await query(
         `INSERT INTO event_state_history (event_id, field, old_value, new_value, changed_by, note)
          VALUES ($1, 'event_state', $2, 'action_underway', $3, 'Removal completed, pending verification')`,
@@ -1044,11 +1321,31 @@ export async function verifyEvent(eventId, { verifierId, outcome, notes }) {
     throw new Error('Event not found');
   }
 
-  await query(
+  const { rows: verificationRows } = await query(
     `INSERT INTO verifications (event_id, verifier_id, outcome, notes)
-     VALUES ($1, $2, $3, $4)`,
+     VALUES ($1, $2, $3, $4)
+     RETURNING verification_id`,
     [eventId, verifierId, outcome, notes || null]
   );
+
+  // Fire-and-forget, same pattern as recordActivityOnChain's caller (spec
+  // §21): a slow/failed chain submission must never block the verifier's
+  // request. Proved regardless of outcome — this is the ONLY proof
+  // mechanism an action-event (no legacy_activity_id, spec §27) will ever
+  // get, and a 'disputed' attestation deserves tamper-evidence as much as
+  // a 'verified' one does. Legacy-activity-backed events already get an
+  // equivalent proof via recordActivityOnChain on the activity itself
+  // (see recordReviewOnEvent above), so this isn't a duplicate for them —
+  // it's the record of the verifier's own attestation, not the original
+  // submission.
+  recordVerificationOnChain(verificationRows[0].verification_id).catch((proofErr) =>
+    console.error('[onchainProof] background submission failed for verification', verificationRows[0].verification_id, ':', proofErr.message)
+  );
+
+  // A verifier acting on the event changes the verifier_review signal (and,
+  // for an adverse outcome, contradictory_evidence) — recompute so the
+  // stored signals explain the state the event is actually in now (spec §14).
+  await computeConfidenceSignals(eventId);
 
   if (outcome === 'verified') {
     if (VERIFICATION_STATE_RANK.verified > VERIFICATION_STATE_RANK[current.verification_state]) {

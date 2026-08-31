@@ -1,6 +1,6 @@
 import { getDashboardStats } from '../services/activityService.js';
 import { getUsers, setUserActiveStatus as setUserActiveStatusInService } from '../services/userService.js';
-import { listOrganizations, createOrganization } from '../services/organizationService.js';
+import { listOrganizations, createOrganization, addOrganizationMembership } from '../services/organizationService.js';
 import { listNotificationsForRecipient, markNotificationReadById } from '../services/notificationService.js';
 import asyncHandler from '../middleware/asyncHandler.js';
 
@@ -65,10 +65,22 @@ async function createPublicOrganization(req, res) {
   const existing = (await listOrganizations(true))
     .find((o) => o.name.toLowerCase() === name.toLowerCase());
   if (existing) {
+    // Deliberately NOT joining the caller to an org that already exists —
+    // typing an existing NGO's name into the picker must not enrol you in
+    // it, which is the exact hole resolveContributorOrganization closes.
     return res.status(200).json({ ok: true, organization: { orgId: existing.orgId, name: existing.name } });
   }
 
   const org = await createOrganization({ name, isActive: true });
+
+  // Whoever creates an org from the submit form is a member of it —
+  // without this they'd immediately fail the membership check on the very
+  // submission they created it for. This route is also reachable
+  // unauthenticated during signup (no token yet), hence the optional user.
+  if (req.user?.id) {
+    await addOrganizationMembership(req.user.id, org.orgId, 'owner');
+  }
+
   res.status(201).json({ ok: true, organization: { orgId: org.orgId, name: org.name } });
 }
 

@@ -1,5 +1,6 @@
 import { env } from '../config/env.js';
 import { query } from '../config/connection.js';
+import { LIFE_CONDITION_VALUES, HABITAT_CONDITION_VALUES, sanitizeSubjectAttributes } from '../constants/subjectAttributes.js';
 
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 const OPENAI_TRANSCRIBE_URL = 'https://api.openai.com/v1/audio/transcriptions';
@@ -53,7 +54,10 @@ Only use family/code pairs that appear verbatim in this taxonomy — never inven
 
 Respond with ONLY a JSON object, no other text, in exactly this shape:
 {
-  "subjects": [{"family": "pollution_waste", "code": "fishing_gear", "confidence": 0.9}],
+  "subjects": [
+    {"family": "pollution_waste", "code": "fishing_gear", "confidence": 0.9},
+    {"family": "life", "code": "sea_turtle", "confidence": 0.85, "attributes": {"condition": "entangled"}}
+  ],
   "description": "one plain sentence describing what this shows",
   "quantityEstimateKg": 12.5,
   "missingFields": ["quantity", "location"]
@@ -61,6 +65,11 @@ Respond with ONLY a JSON object, no other text, in exactly this shape:
 
 Rules:
 - "subjects" — 1 to 4 entries, each confidence between 0 and 1, most relevant first.
+- "attributes" (optional, per subject) — only include it when you can tell one of these from the input, and only using these exact values:
+  - a "life" subject may carry "condition", one of: ${LIFE_CONDITION_VALUES.join(', ')}
+  - a "habitat" subject may carry "condition", one of: ${HABITAT_CONDITION_VALUES.join(', ')}
+  - a "pollution_waste" subject may carry "severity" and/or "hazard" as a short free-text phrase (e.g. "severe", "sharp metal edges") — omit either if not evident
+  - never invent a value outside these lists, and omit "attributes" entirely for a subject rather than guessing.
 - "quantityEstimateKg" — only for pollution_waste subjects where a weight is visible/stated; otherwise null. Never guess wildly — if you can't estimate, use null.
 - "missingFields" — from this fixed set only: "quantity", "location", "species", "action_taken", "hazard". Include a field only if knowing it would materially improve this specific record.
 - If the input is not a genuine environmental observation, return {"subjects": [], "description": "", "quantityEstimateKg": null, "missingFields": []}.`;
@@ -75,11 +84,17 @@ function validateInference(raw, taxonomy) {
         .slice(0, 4)
         .map((s) => {
           const taxonomyEntry = taxonomy.find((t) => t.family === s.family && t.code === s.code);
+          // Same vocabulary check the DB write path re-applies (spec §17:
+          // provenance doesn't excuse bad data) — enforced here too so a
+          // model that ignores the prompt's fixed value lists doesn't
+          // produce a subject that merely *looks* attribute-rich.
+          const attributes = sanitizeSubjectAttributes(s.family, s.attributes);
           return {
             family: s.family,
             code: s.code,
             label: taxonomyEntry.label,
-            confidence: Math.max(0, Math.min(1, Number(s.confidence) || 0))
+            confidence: Math.max(0, Math.min(1, Number(s.confidence) || 0)),
+            ...(Object.keys(attributes).length > 0 ? { attributes } : {})
           };
         })
     : [];

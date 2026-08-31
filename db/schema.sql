@@ -390,6 +390,37 @@ CREATE TABLE IF NOT EXISTS environmental_events (
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Location architecture (spec §18) — lat/lon/label/source above already
+-- existed; these fill in the rest of the spec's component list.
+-- location_accuracy_m/location_capture_method can only ever come from the
+-- client (only the device knows its own GPS accuracy, or whether the
+-- contributor dragged the pin away from wherever geolocation put it) —
+-- 'manual_pin' is NOT a lesser source, just a different one, matching
+-- spec §18's own point that a deliberately-placed pin is still legitimate,
+-- it just isn't an automatic in-field GPS fix. admin_area/country/
+-- water_body are never client-supplied — they're filled in by
+-- locationEnrichmentService's background reverse-geocode lookup after the
+-- event is created (spec §7.5/§17: EXTERNAL_ENRICHMENT), so a NULL here
+-- means "not yet enriched" or "lookup found nothing", not "known empty".
+-- coastal_region is NOT added — no reliable free gazetteer resolves an
+-- informal region name like "Gulf Coast" from a lat/lon, and inventing one
+-- would violate spec §17 ("AI/enrichment must not silently invent facts").
+-- Field-level provenance for location (spec §17). `location_source` was a
+-- single value covering the whole location, which stopped being true once
+-- admin_area/country/water_body started arriving from a reverse-geocode:
+-- those are EXTERNAL_ENRICHMENT while lat/lon are user_provided or
+-- system_captured. Same { field: provenance_source } shape as
+-- event_subjects.attribute_provenance; keys absent from the map fall back
+-- to `location_source` at read time, so older rows keep their old meaning.
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS location_provenance JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS location_accuracy_m NUMERIC(10, 2);
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS location_capture_method TEXT
+    CHECK (location_capture_method IS NULL OR location_capture_method IN ('gps', 'manual_pin', 'unknown'));
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS admin_area TEXT;
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS country TEXT;
+ALTER TABLE environmental_events ADD COLUMN IF NOT EXISTS water_body TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_environmental_events_event_state ON environmental_events (event_state);
 CREATE INDEX IF NOT EXISTS idx_environmental_events_verification_state ON environmental_events (verification_state);
 CREATE INDEX IF NOT EXISTS idx_environmental_events_legacy_activity_id ON environmental_events (legacy_activity_id);
@@ -411,10 +442,19 @@ CREATE TABLE IF NOT EXISTS event_subjects (
     event_id            UUID NOT NULL REFERENCES environmental_events(event_id) ON DELETE CASCADE,
     subject_id          UUID NOT NULL REFERENCES subjects(subject_id),
     attributes           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    attribute_provenance JSONB NOT NULL DEFAULT '{}'::jsonb,
     source               provenance_source NOT NULL DEFAULT 'user_provided',
     confidence           NUMERIC(4, 3) CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Additive: `source` above is the subject-level default (spec §17 fallback);
+-- `attribute_provenance` is a { attributeKey: provenance_source } map so an
+-- individual field — e.g. a contributor-corrected `quantity_kg` on an
+-- otherwise AI-inferred subject — can carry its own provenance instead of
+-- inheriting the subject's. Keys absent from the map (older rows, or
+-- attributes nobody overrode) fall back to `source` at read time.
+ALTER TABLE event_subjects ADD COLUMN IF NOT EXISTS attribute_provenance JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE INDEX IF NOT EXISTS idx_event_subjects_event_id ON event_subjects (event_id);
 CREATE INDEX IF NOT EXISTS idx_event_subjects_subject_id ON event_subjects (subject_id);
@@ -497,6 +537,17 @@ CREATE TABLE IF NOT EXISTS verifications (
 
 CREATE INDEX IF NOT EXISTS idx_verifications_event_id ON verifications (event_id, created_at DESC);
 
+-- Proof lifecycle columns to match `activities` (spec §21) — a verifier
+-- attestation gets the same tamper-evident on-chain proof an approved
+-- activity does. This is what actually closes the gap for action-events
+-- (created via Plan Action) that have no legacy_activity_id at all and so,
+-- until now, could never get a proof of any kind — a verification is the
+-- only event through their lifecycle that reliably exists to hang one off.
+ALTER TABLE verifications ADD COLUMN IF NOT EXISTS onchain_recorded_at TIMESTAMPTZ;
+ALTER TABLE verifications ADD COLUMN IF NOT EXISTS onchain_status TEXT;
+ALTER TABLE verifications ADD COLUMN IF NOT EXISTS onchain_submission_started_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_verifications_onchain_status ON verifications (onchain_status);
+
 -- What changed as a consequence of an event (spec §4, §23) — e.g. kg of
 -- debris removed, animals rescued. Kept as a metric ledger rather than
 -- fixed columns so new metrics don't require schema changes.
@@ -510,6 +561,71 @@ CREATE TABLE IF NOT EXISTS event_impact (
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_impact_event_id ON event_impact (event_id);
+
+-- The detailed internal signals behind an event's verification_state
+-- (spec §14). The spec is explicit that the *exposed* levels stay coarse
+-- (unverified/supported/corroborated/verified) and that we must not
+-- "make a fake scientifically precise score" — so this deliberately
+-- stores no weights and no composite number. Each signal only records
+-- which way it leans, plus a human-readable reason, so a verifier can see
+-- WHY an event sits where it does and judge for themselves.
+--
+-- Kept as a signal ledger rather than fixed columns, the same way
+-- event_impact is, so new signals don't require a schema change.
+CREATE TABLE IF NOT EXISTS confidence_signals (
+    signal_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id     UUID NOT NULL REFERENCES environmental_events(event_id) ON DELETE CASCADE,
+    signal       TEXT NOT NULL,
+    stance       TEXT NOT NULL CHECK (stance IN ('supports', 'weakens', 'neutral')),
+    detail       TEXT,
+    computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT confidence_signals_event_signal_unique UNIQUE (event_id, signal)
+);
+
+CREATE INDEX IF NOT EXISTS idx_confidence_signals_event_id ON confidence_signals (event_id);
+
+-- MEASUREMENT as its own entity (spec §26) — a structured environmental
+-- reading (water quality, conditions), distinct from event_subjects'
+-- generic {value, unit} JSONB attributes (which stay as-is for backward
+-- compatibility and simple display). One row per parameter reading, so
+-- each carries its own instrument/method/notes rather than one shared
+-- value for an entire submission with several readings in it.
+CREATE TABLE IF NOT EXISTS measurements (
+    measurement_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id          UUID NOT NULL REFERENCES environmental_events(event_id) ON DELETE CASCADE,
+    event_subject_id  UUID REFERENCES event_subjects(event_subject_id) ON DELETE CASCADE,
+    parameter         TEXT NOT NULL,
+    value             NUMERIC(14, 4) NOT NULL,
+    unit              TEXT,
+    instrument        TEXT,
+    method            TEXT CHECK (method IS NULL OR method IN ('instrument', 'informal')),
+    notes             TEXT,
+    source            provenance_source NOT NULL DEFAULT 'user_provided',
+    recorded_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_measurements_event_id ON measurements (event_id);
+
+-- EXTERNAL_ENRICHMENT as its own entity (spec §26) — an audit trail of
+-- what an external lookup (reverse-geocode, weather archive) actually
+-- returned, mirroring how ai_inferences already logs what the AI
+-- classifier returned regardless of whether the contributor ever
+-- confirmed it. event_id/activity_id are both nullable and either may be
+-- set: location enrichment always has an event_id in scope; weather
+-- backfill runs before the event is created, so it logs against
+-- activity_id instead.
+CREATE TABLE IF NOT EXISTS external_enrichments (
+    enrichment_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id       UUID REFERENCES environmental_events(event_id) ON DELETE CASCADE,
+    activity_id    TEXT REFERENCES activities(id) ON DELETE CASCADE,
+    source_system  TEXT NOT NULL,
+    input          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    result         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    fetched_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_external_enrichments_event_id ON external_enrichments (event_id);
+CREATE INDEX IF NOT EXISTS idx_external_enrichments_activity_id ON external_enrichments (activity_id);
 
 -- Seed the taxonomy. ON CONFLICT DO NOTHING makes this safe to re-run as
 -- the schema evolves and new subjects are added to the lists below.
@@ -608,6 +724,17 @@ INSERT INTO subjects (family, code, label) VALUES
     ('human_action', 'infrastructure_intervention', 'Infrastructure intervention'),
     ('human_action', 'community_event', 'Community event'),
     ('human_action', 'policy_enforcement', 'Policy / enforcement activity')
+ON CONFLICT (family, code) DO NOTHING;
+
+-- Habitat "associated phenomena" (spec §7.4) — named explicitly in the
+-- spec text (bleaching is literally spec §3's "Coral bleaching documented"
+-- example event) but missing from the original seed above, which only
+-- covered habitat *types*, not the phenomena that can happen to them.
+INSERT INTO subjects (family, code, label) VALUES
+    ('habitat', 'bleaching', 'Bleaching'),
+    ('habitat', 'sedimentation', 'Sedimentation'),
+    ('habitat', 'habitat_destruction', 'Habitat destruction'),
+    ('habitat', 'vegetation_loss', 'Vegetation loss')
 ON CONFLICT (family, code) DO NOTHING;
 
 
