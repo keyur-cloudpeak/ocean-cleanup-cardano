@@ -750,6 +750,20 @@ ON CONFLICT (family, code) DO NOTHING;
 -- event_subjects already uses, for one consistent vocabulary.
 ALTER TABLE evidence ADD COLUMN IF NOT EXISTS source provenance_source NOT NULL DEFAULT 'user_provided';
 
+-- Every insert now sets `source` explicitly (see environmentalEventService
+-- and scripts/backfillEnvironmentalEvents) instead of leaning on the
+-- default above, which was correct only by coincidence. This corrects the
+-- rows written before that: text extracted from an uploaded document is
+-- machine-produced, not something the contributor wrote, so it is
+-- system_captured. Idempotent — matches nothing once already corrected.
+UPDATE evidence ev
+SET source = 'system_captured'
+FROM contributions c
+WHERE ev.contribution_id = c.contribution_id
+  AND ev.evidence_type = 'contributor_statement'
+  AND c.intake_method = 'upload'
+  AND ev.source = 'user_provided';
+
 -- ORGANIZATION_MEMBERSHIP (spec §26): users.organization_id stays the
 -- primary-org shortcut everything already reads — this is additive,
 -- letting a person eventually belong to more than one org with a role,

@@ -295,19 +295,31 @@ export async function createEventForActivity(activity, options = {}) {
     }
   }
 
+  // `source` is set explicitly on every evidence insert (spec §17) rather
+  // than left to the column default. The default happens to be right for
+  // the paths that exist today, which is exactly the problem: a future
+  // AI- or enrichment-attached item would inherit 'user_provided' and be
+  // silently mislabelled as something the contributor supplied.
+  // Different axis from `capture_source` (camera vs gallery): that says
+  // how the file was obtained, this says who or what produced the record.
   for (const image of images) {
     await query(
-      `INSERT INTO evidence (event_id, contribution_id, evidence_type, storage_url, gateway_url, cid, capture_source)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      `INSERT INTO evidence (event_id, contribution_id, evidence_type, storage_url, gateway_url, cid, capture_source, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'user_provided')`,
       [eventId, contributionId, evidenceType || 'photo', image.storageUrl, image.gatewayUrl, image.cid, captureSource || 'unknown']
     );
   }
 
   if (rawText) {
+    // A typed or spoken note is the contributor's own statement — they can
+    // review and correct a voice transcript before submitting. Text pulled
+    // out of an uploaded document is not: the machine extracted it, so it's
+    // system_captured even though the document itself was user-supplied.
+    const statementSource = intakeMethod === 'upload' ? 'system_captured' : 'user_provided';
     await query(
-      `INSERT INTO evidence (event_id, contribution_id, evidence_type, capture_source, metadata)
-       VALUES ($1, $2, 'contributor_statement', 'unknown', $3)`,
-      [eventId, contributionId, JSON.stringify({ text: rawText })]
+      `INSERT INTO evidence (event_id, contribution_id, evidence_type, capture_source, metadata, source)
+       VALUES ($1, $2, 'contributor_statement', 'unknown', $3, $4)`,
+      [eventId, contributionId, JSON.stringify({ text: rawText }), statementSource]
     );
   }
 
@@ -1174,11 +1186,12 @@ export async function completeAction(actionEventId, { actorId, kgRemoved, note, 
 
   // No contribution_id here (evidence.contribution_id is nullable) — a
   // completion photo is attached directly by the acting org/verifier at
-  // closeout, not submitted as a raw contribution the way intake evidence is.
+  // closeout, not submitted as a raw contribution the way intake evidence
+  // is. Still user_provided: a person attached it, just at a later step.
   for (const image of images || []) {
     await query(
-      `INSERT INTO evidence (event_id, evidence_type, storage_url, gateway_url, cid, capture_source)
-       VALUES ($1, 'photo', $2, $3, $4, 'unknown')`,
+      `INSERT INTO evidence (event_id, evidence_type, storage_url, gateway_url, cid, capture_source, source)
+       VALUES ($1, 'photo', $2, $3, $4, 'unknown', 'user_provided')`,
       [actionEventId, image.storageUrl, image.gatewayUrl, image.cid]
     );
   }

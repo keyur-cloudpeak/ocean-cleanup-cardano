@@ -87,11 +87,15 @@ async function backfillOne(row) {
     [eventId, subjectRows[0].subject_id, JSON.stringify({ quantity_kg: Number(row.quantity) || 0 })]
   );
 
+  // Set explicitly rather than relying on the column default (spec §17).
+  // These are real contributor uploads being migrated from the legacy
+  // activities table, so user_provided is accurate — but it says so now
+  // instead of merely happening to inherit it.
   for (const image of imageArrays(row)) {
     await query(
       `INSERT INTO evidence
-         (event_id, contribution_id, evidence_type, storage_url, gateway_url, cid, capture_source)
-       VALUES ($1, $2, 'photo', $3, $4, $5, 'unknown')`,
+         (event_id, contribution_id, evidence_type, storage_url, gateway_url, cid, capture_source, source)
+       VALUES ($1, $2, 'photo', $3, $4, $5, 'unknown', 'user_provided')`,
       [eventId, contributionId, image.storageUrl, image.gatewayUrl, image.cid]
     );
   }
