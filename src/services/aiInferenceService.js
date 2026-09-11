@@ -1,6 +1,6 @@
 import { env } from '../config/env.js';
 import { query } from '../config/connection.js';
-import { LIFE_CONDITION_VALUES, HABITAT_CONDITION_VALUES, sanitizeSubjectAttributes } from '../constants/subjectAttributes.js';
+import { LIFE_CONDITION_VALUES, LIFE_OUTCOME_VALUES, HABITAT_CONDITION_VALUES, sanitizeSubjectAttributes } from '../constants/subjectAttributes.js';
 
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 const OPENAI_TRANSCRIBE_URL = 'https://api.openai.com/v1/audio/transcriptions';
@@ -47,7 +47,7 @@ function taxonomyPromptBlock(taxonomy) {
 
 const SYSTEM_PROMPT = `You are Blue Mind's environmental event classifier. Blue Mind is a platform where citizens and organizations report ocean/coastal environmental observations — pollution, wildlife, habitat conditions, and cleanup/rescue actions.
 
-Given a photo or a short written description of what someone observed or did, identify which subjects from the taxonomy below apply. A single report can have multiple subjects (e.g. a ghost net AND an entangled turtle AND a reef habitat AND a rescue action all in one report).
+Given a photo or a short written description of what someone observed or did, identify which subjects from the taxonomy below apply. A single report can have multiple subjects (e.g. a ghost net AND an entangled turtle AND a reef habitat AND a rescue action all in one report). If the input describes more than one individual of the same species with different fates — e.g. "two turtles were trapped, one died" — return TWO separate "life" entries with that same family/code, one per individual, each with its own "outcome" attribute. Never merge multiple individuals into one entry.
 
 Only use family/code pairs that appear verbatim in this taxonomy — never invent a code:
 {{TAXONOMY}}
@@ -56,7 +56,9 @@ Respond with ONLY a JSON object, no other text, in exactly this shape:
 {
   "subjects": [
     {"family": "pollution_waste", "code": "fishing_gear", "confidence": 0.9},
-    {"family": "life", "code": "sea_turtle", "confidence": 0.85, "attributes": {"condition": "entangled"}}
+    {"family": "life", "code": "sea_turtle", "confidence": 0.85, "attributes": {"condition": "entangled", "outcome": "released"}},
+    {"family": "life", "code": "sea_turtle", "confidence": 0.85, "attributes": {"condition": "entangled", "outcome": "deceased"}},
+    {"family": "human_action", "code": "removal", "confidence": 0.9}
   ],
   "description": "one plain sentence describing what this shows",
   "quantityEstimateKg": 12.5,
@@ -66,7 +68,8 @@ Respond with ONLY a JSON object, no other text, in exactly this shape:
 Rules:
 - "subjects" — 1 to 4 entries, each confidence between 0 and 1, most relevant first.
 - "attributes" (optional, per subject) — only include it when you can tell one of these from the input, and only using these exact values:
-  - a "life" subject may carry "condition", one of: ${LIFE_CONDITION_VALUES.join(', ')}
+  - a "life" subject may carry "condition" (the state it was found in), one of: ${LIFE_CONDITION_VALUES.join(', ')}
+  - a "life" subject may separately carry "outcome" (what happened to it as a result of any action taken — distinct from "condition"), one of: ${LIFE_OUTCOME_VALUES.join(', ')}
   - a "habitat" subject may carry "condition", one of: ${HABITAT_CONDITION_VALUES.join(', ')}
   - a "pollution_waste" subject may carry "severity" and/or "hazard" as a short free-text phrase (e.g. "severe", "sharp metal edges") — omit either if not evident
   - never invent a value outside these lists, and omit "attributes" entirely for a subject rather than guessing.

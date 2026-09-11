@@ -371,25 +371,27 @@ export async function getContributorStats(contributorId) {
     [contributorId]
   );
 
-  // Rank: position of this contributor among all contributors by total approved kg (higher = better)
+  // Rank: position of this contributor among all contributors by total
+  // reward-ledger points (higher = better). Points are trust-weighted —
+  // earned from approval, corroboration, and verification (spec §14) —
+  // not raw reported quantity, so this no longer rewards volume over
+  // meaningful, confirmed contributions.
   const rankResult = await query(
     `SELECT rank
      FROM (
-       SELECT contributor_id,
-              RANK() OVER (ORDER BY COALESCE(SUM(quantity) FILTER (WHERE status = 'approved'), 0) DESC) AS rank
-       FROM activities
-       WHERE contributor_id IS NOT NULL
-       GROUP BY contributor_id
+       SELECT user_id,
+              RANK() OVER (ORDER BY COALESCE(SUM(amount), 0) DESC) AS rank
+       FROM reward_ledger
+       GROUP BY user_id
      ) ranked
-     WHERE contributor_id = $1`,
+     WHERE user_id = $1`,
     [contributorId]
   );
 
   // Total contributor count (for "top X%" calculation)
   const countResult = await query(
-    `SELECT COUNT(DISTINCT contributor_id)::int AS total
-     FROM activities
-     WHERE contributor_id IS NOT NULL`
+    `SELECT COUNT(DISTINCT user_id)::int AS total
+     FROM reward_ledger`
   );
 
   const row = result.rows[0] || {};

@@ -71,7 +71,13 @@ async function planAction(req, res) {
  * to go instead of only the kg number being recorded.
  */
 async function complete(req, res) {
-  const { kgRemoved, note, imageUrls } = req.body;
+  const { kgRemoved, note, imageUrls, impacts: impactsRaw } = req.body;
+  let impacts;
+  try {
+    impacts = impactsRaw ? (typeof impactsRaw === 'string' ? JSON.parse(impactsRaw) : impactsRaw) : undefined;
+  } catch {
+    impacts = undefined;
+  }
 
   let images = [];
   try {
@@ -89,7 +95,7 @@ async function complete(req, res) {
 
   let closedEventIds;
   try {
-    closedEventIds = await completeAction(req.params.id, { actorId: req.user.id, kgRemoved, note, images });
+    closedEventIds = await completeAction(req.params.id, { actorId: req.user.id, kgRemoved, impacts, note, images });
   } catch (err) {
     return res.status(400).json({ ok: false, error: err.message });
   }

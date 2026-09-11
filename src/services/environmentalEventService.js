@@ -7,6 +7,7 @@ import { recordVerificationOnChain } from './onchainProofService.js';
 import { fetchLocationContext } from './locationEnrichmentService.js';
 import { logExternalEnrichment } from './externalEnrichmentService.js';
 import { computeConfidenceSignals } from './confidenceSignalService.js';
+import { awardCorroborationPoints, awardVerificationPoints } from './rewardLedgerService.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -107,47 +108,70 @@ export async function createEventForActivity(activity, options = {}) {
        WHERE (family, code) IN (${aiSubjects.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2})`).join(', ')})`,
       aiSubjects.flatMap((s) => [s.family, s.code])
     );
-    subjectsToInsert = rows.map((row) => {
-      const match = aiSubjects.find((s) => s.family === row.family && s.code === row.code);
-      // Callers that build subjects directly (e.g. the measurement intake,
-      // which knows its own provenance — instrument reading vs. informal
-      // observation) can override source/attributes per subject; AI intake
-      // leaves both unset and gets the historical defaults.
-      const source = match?.source || 'ai_inferred';
-      // The vocabulary (spec §7.3-7.4 condition enums, §7.1 free-text
-      // severity/hazard) is re-validated here rather than trusted from the
-      // request body — aiInferenceService already applies the same check
-      // to what the model returns, but this endpoint accepts client-built
-      // `attributes` too (measurement intake, and anything a future
-      // manual-edit UI sends), so nothing reaches the DB unsanitized.
-      const ontologyAttributes = sanitizeSubjectAttributes(row.family, match?.attributes);
-      // A measurement-intake subject supplies its own attributes wholesale
-      // (e.g. {value, unit}) and isn't part of the ontology's condition/
-      // severity vocabulary, so it passes through as-is alongside — not
-      // instead of — whatever sanitizeSubjectAttributes recognized.
-      const passthroughAttributes = match?.attributes && Object.keys(ontologyAttributes).length === 0
-        ? match.attributes : {};
-      // quantity_kg only applies to pollution_waste, and only as a
-      // fallback when the caller didn't already supply one (measurement
-      // intake's {value, unit} has no quantity_kg concept at all).
-      const needsQuantityFallback = row.family === 'pollution_waste'
-        && !('quantity_kg' in passthroughAttributes) && !('quantity_kg' in ontologyAttributes);
-      const attributes = { ...passthroughAttributes, ...ontologyAttributes };
-      if (needsQuantityFallback) attributes.quantity_kg = Number(activity.quantity) || 0;
+    // One taxonomy lookup per distinct (family, code) — but one output row
+    // per *input* subject. Iterating aiSubjects (not rows) matters: two
+    // entries sharing the same family/code (e.g. two `life:sea_turtle`
+    // entries from a report with one entangled and one deceased turtle)
+    // must each become their own event_subjects row, not collapse into a
+    // single one that silently drops the second individual's attributes.
+    const subjectIdByKey = new Map(rows.map((row) => [`${row.family}:${row.code}`, row.subject_id]));
+    subjectsToInsert = aiSubjects
+      .filter((match) => subjectIdByKey.has(`${match.family}:${match.code}`))
+      .map((match) => {
+        const subjectId = subjectIdByKey.get(`${match.family}:${match.code}`);
+        // Callers that build subjects directly (e.g. the measurement intake,
+        // which knows its own provenance — instrument reading vs. informal
+        // observation) can override source/attributes per subject; AI intake
+        // leaves both unset and gets the historical defaults.
+        const source = match.source || 'ai_inferred';
+        // The vocabulary (spec §7.3-7.4 condition enums, §7.1 free-text
+        // severity/hazard) is re-validated here rather than trusted from the
+        // request body — aiInferenceService already applies the same check
+        // to what the model returns, but this endpoint accepts client-built
+        // `attributes` too (measurement intake, and anything a future
+        // manual-edit UI sends), so nothing reaches the DB unsanitized.
+        const ontologyAttributes = sanitizeSubjectAttributes(match.family, match.attributes);
+        // A measurement-intake subject supplies its own attributes wholesale
+        // (e.g. {value, unit}) and isn't part of the ontology's condition/
+        // severity vocabulary, so it passes through as-is alongside — not
+        // instead of — whatever sanitizeSubjectAttributes recognized.
+        const passthroughAttributes = match.attributes && Object.keys(ontologyAttributes).length === 0
+          ? match.attributes : {};
+        // quantity_kg only applies to pollution_waste, and only as a
+        // fallback when the caller didn't already supply one (measurement
+        // intake's {value, unit} has no quantity_kg concept at all).
+        const needsQuantityFallback = match.family === 'pollution_waste'
+          && !('quantity_kg' in passthroughAttributes) && !('quantity_kg' in ontologyAttributes);
+        const attributes = { ...passthroughAttributes, ...ontologyAttributes };
+        if (needsQuantityFallback) attributes.quantity_kg = Number(activity.quantity) || 0;
 
-      const overrides = { ...(match?.attributeProvenance || {}) };
-      if (needsQuantityFallback && quantityProvenance) overrides.quantity_kg = quantityProvenance;
+        const overrides = { ...(match.attributeProvenance || {}) };
+        if (needsQuantityFallback && quantityProvenance) overrides.quantity_kg = quantityProvenance;
 
-      return {
-        subjectId: row.subject_id,
-        code: row.code,
-        confidence: match?.confidence ?? null,
-        source,
-        attributes,
-        attributeProvenance: withAttributeProvenance(attributes, source, overrides)
-      };
-    });
-  } else {
+        return {
+          subjectId,
+          code: match.code,
+          confidence: match.confidence ?? null,
+          source,
+          attributes,
+          attributeProvenance: withAttributeProvenance(attributes, source, overrides)
+        };
+      });
+  } else if (!intakeMethod) {
+    // The category-derived pollution_waste fallback only makes sense for a
+    // genuinely pre-AI submission — the legacy wizard/mobile-app path that
+    // has no concept of `intakeMethod` at all and really is always a
+    // cleanup report. A submission tagged with a modern intake method
+    // (photo_video, tell_blue_mind, measurement, upload) that came back
+    // with zero AI subjects — a failed/timed-out inference call, say — must
+    // NOT be guessed as pollution_waste here: a wildlife sighting or
+    // water-quality reading with a broken AI call would otherwise be
+    // silently mislabeled as cleanup debris, exactly the "everything is
+    // cleanup" behavior the universal-contributor model removes. Falling
+    // through with zero subjects means no event is created for it (see the
+    // length check below) — the activity record itself is still saved, so
+    // nothing is lost, it's just left for a verifier to classify by hand
+    // rather than guessed wrong automatically.
     const subjectCode = CATEGORY_TO_SUBJECT_CODE[activity.category] || 'mixed_waste';
     const { rows } = await query(
       `SELECT subject_id FROM subjects WHERE family = 'pollution_waste' AND code = $1`,
@@ -161,6 +185,8 @@ export async function createEventForActivity(activity, options = {}) {
         attributeProvenance: withAttributeProvenance(attributes, 'user_provided', quantityProvenance ? { quantity_kg: quantityProvenance } : {})
       };
     });
+  } else {
+    subjectsToInsert = [];
   }
   if (subjectsToInsert.length === 0) return null;
 
@@ -549,6 +575,25 @@ async function bumpTowardCorroborated(current, corroboratingCount) {
     `UPDATE environmental_events SET event_state = $2, verification_state = $3, updated_at = NOW() WHERE event_id = $1`,
     [current.event_id, nextEventState, nextVerificationState]
   );
+
+  // Trust-weighted points (spec §14): the original contributor earns a
+  // corroboration bonus the moment independent reports push their
+  // submission's verification_state forward — not for how much they
+  // reported, for being confirmed by someone else.
+  if (nextVerificationState !== current.verification_state) {
+    const { rows: contribRows } = await query(
+      `SELECT c.contributor_id FROM environmental_events e
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE e.event_id = $1`,
+      [current.event_id]
+    );
+    const contributorId = contribRows[0]?.contributor_id;
+    if (contributorId) {
+      await awardCorroborationPoints({ eventId: current.event_id, userId: contributorId }).catch((err) =>
+        console.error('[rewardLedgerService] corroboration points failed for event', current.event_id, ':', err.message)
+      );
+    }
+  }
 }
 
 function mapEventSummaryRow(row) {
@@ -1040,12 +1085,58 @@ export async function getContributorImpactSummary(contributorId) {
   );
 
   const row = rows[0] || {};
+
+  // Generic, family-agnostic breakdowns (spec §8/§16: metrics must adapt to
+  // contributor type instead of assuming everyone is a cleanup crew). The
+  // UI derives its own per-type metric set from these rather than the
+  // backend hardcoding "rescues"/"anomalies"/etc. per family.
+  const [{ rows: familyRows }, { rows: metricRows }] = await Promise.all([
+    query(
+      `SELECT s.family,
+              COUNT(DISTINCT es.event_id)::int AS event_count,
+              COUNT(DISTINCT es.event_id) FILTER (WHERE e.event_state = 'addressed')::int AS addressed_count,
+              COUNT(DISTINCT es.event_id) FILTER (WHERE e.event_state = 'needs_attention')::int AS needs_attention_count
+       FROM event_subjects es
+       JOIN subjects s ON s.subject_id = es.subject_id
+       JOIN environmental_events e ON e.event_id = es.event_id
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE c.contributor_id = $1
+       GROUP BY s.family`,
+      [contributorId]
+    ),
+    query(
+      `SELECT ei.metric, ei.unit, COALESCE(SUM(ei.value), 0) AS total
+       FROM event_impact ei
+       JOIN environmental_events e ON e.event_id = ei.event_id
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE c.contributor_id = $1
+       GROUP BY ei.metric, ei.unit`,
+      [contributorId]
+    )
+  ]);
+
+  const byFamily = {};
+  for (const r of familyRows) {
+    byFamily[r.family] = {
+      total: r.event_count,
+      addressed: r.addressed_count,
+      needsAttention: r.needs_attention_count
+    };
+  }
+
+  const byMetric = {};
+  for (const r of metricRows) {
+    byMetric[r.metric] = { value: Number(r.total) || 0, unit: r.unit || null };
+  }
+
   return {
     contributions: Number(row.contributions) || 0,
     verifiedEvents: Number(row.verified_events) || 0,
     actionsCompleted: Number(row.actions_completed) || 0,
     kgRemoved: Number(row.kg_removed) || 0,
     locationsAffected: Number(row.locations_affected) || 0,
+    byFamily,
+    byMetric,
     trends: {
       contributions: pctChange(row.contributions_cur, row.contributions_prev),
       verifiedEvents: pctChange(row.verified_cur, row.verified_prev),
@@ -1164,7 +1255,7 @@ export async function planActionForEvent(observationEventId, { actorId, subjectC
  * 'addressed' is about the action being done, not the report being
  * confirmed resolved.
  */
-export async function completeAction(actionEventId, { actorId, kgRemoved, note, images }) {
+export async function completeAction(actionEventId, { actorId, kgRemoved, impacts, note, images }) {
   const { rows } = await query(
     `SELECT event_state FROM environmental_events WHERE event_id = $1`,
     [actionEventId]
@@ -1196,10 +1287,21 @@ export async function completeAction(actionEventId, { actorId, kgRemoved, note, 
     );
   }
 
-  if (kgRemoved != null && Number(kgRemoved) > 0) {
+  // Generic outcome recording (spec §7/§11): a rescue writes
+  // {metric:'lives_rescued', value:1, unit:'count'}, a restoration action
+  // writes {metric:'condition_change', ...} — not every action is
+  // kg-removed. `kgRemoved` stays as a convenience shorthand for the
+  // cleanup case rather than a required/only shape.
+  const impactEntries = [
+    ...(kgRemoved != null && Number(kgRemoved) > 0
+      ? [{ metric: 'debris_removed_kg', value: Number(kgRemoved), unit: 'kg' }]
+      : []),
+    ...(Array.isArray(impacts) ? impacts.filter((i) => i && i.metric && i.value != null) : [])
+  ];
+  for (const { metric, value, unit } of impactEntries) {
     await query(
-      `INSERT INTO event_impact (event_id, metric, value, unit) VALUES ($1, 'debris_removed_kg', $2, 'kg')`,
-      [actionEventId, Number(kgRemoved)]
+      `INSERT INTO event_impact (event_id, metric, value, unit) VALUES ($1, $2, $3, $4)`,
+      [actionEventId, metric, Number(value), unit || null]
     );
   }
 
@@ -1289,7 +1391,7 @@ async function getPrimarySubjectLabel(eventId) {
 // looked up individually — contributors span both the 'contributor' and
 // 'citizen' roles, and notifications.recipient_role must match whichever
 // one a given person actually has.
-async function notifyEventClosure(eventId, { locationLabel, kgRemoved }) {
+async function notifyEventClosure(eventId, { locationLabel, impacts }) {
   const [subjectLabel, contributorIds] = await Promise.all([
     getPrimarySubjectLabel(eventId),
     getContributorsToNotify(eventId)
@@ -1303,7 +1405,7 @@ async function notifyEventClosure(eventId, { locationLabel, kgRemoved }) {
       contributorRole: contributor.role,
       subjectLabel,
       locationLabel,
-      kgRemoved,
+      impacts,
       eventId
     });
   }
@@ -1371,6 +1473,22 @@ export async function verifyEvent(eventId, { verifierId, outcome, notes }) {
         `UPDATE environmental_events SET verification_state = 'verified', updated_at = NOW() WHERE event_id = $1`,
         [eventId]
       );
+
+      // Trust-weighted points (spec §14): a human verifier confirming the
+      // report is worth more than corroboration alone, and — like
+      // corroboration bonuses — has nothing to do with reported quantity.
+      const { rows: contribRows } = await query(
+        `SELECT c.contributor_id FROM environmental_events e
+         JOIN contributions c ON c.contribution_id = e.contribution_id
+         WHERE e.event_id = $1`,
+        [eventId]
+      );
+      const contributorId = contribRows[0]?.contributor_id;
+      if (contributorId) {
+        await awardVerificationPoints({ eventId, userId: contributorId }).catch((err) =>
+          console.error('[rewardLedgerService] verification points failed for event', eventId, ':', err.message)
+        );
+      }
     }
 
     const { rows: responded } = await query(
@@ -1378,11 +1496,13 @@ export async function verifyEvent(eventId, { verifierId, outcome, notes }) {
       [eventId]
     );
 
-    const { rows: impactRows } = await query(
-      `SELECT value FROM event_impact WHERE event_id = $1 AND metric = 'debris_removed_kg' ORDER BY created_at DESC LIMIT 1`,
+    // All outcome metrics recorded on this action event, generic across
+    // subject type (kg removed, lives rescued, condition change, ...) —
+    // not just the cleanup-specific 'debris_removed_kg'.
+    const { rows: impacts } = await query(
+      `SELECT metric, value, unit FROM event_impact WHERE event_id = $1 ORDER BY created_at DESC`,
       [eventId]
     );
-    const kgRemoved = impactRows[0]?.value ?? null;
 
     const closedEventIds = [];
     for (const row of responded) {
@@ -1407,7 +1527,7 @@ export async function verifyEvent(eventId, { verifierId, outcome, notes }) {
         // must never undo or block the state change that already committed.
         notifyEventClosure(row.to_event_id, {
           locationLabel: obsRows[0].location_label,
-          kgRemoved
+          impacts
         }).catch((err) =>
           console.error('[notificationService] closure notification failed for event', row.to_event_id, ':', err.message)
         );

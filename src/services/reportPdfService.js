@@ -139,9 +139,13 @@ export function streamContributorReportPdf(res, { contributor, from, to, summary
   const approvalRate = summary.totalSubmitted ? Math.round((summary.totalApproved / summary.totalSubmitted) * 100) : 0;
 
   sectionTitle(doc, 'Summary');
+  // 'Contributions logged' leads regardless of type; 'Total collected' only
+  // appears when there's actually a weight to report — a wildlife/water-
+  // quality contributor's quantity is always 0, and headlining "0.0 kg"
+  // for them read as if nothing was contributed at all.
   const summaryItems = [
-    ['Total collected', `${totalKg.toFixed(1)} kg`],
-    ['Activities logged', `${activities.length}`],
+    ['Contributions logged', `${activities.length}`],
+    ...(totalKg > 0 ? [['Total collected', `${totalKg.toFixed(1)} kg`]] : []),
     ['Approval rate', `${approvalRate}%`],
     ['Hazard sites logged', `${hazardSites}`],
     ['Species sightings', `${speciesSightings}`],

@@ -1,22 +1,27 @@
 import { query } from '../config/connection.js';
 
 // ─── Badge definitions ────────────────────────────────────────────────────────
+// spec §14: badges/tiers must not encourage submitting more just to
+// progress — 'approved_reports' (a human/verifier actually confirmed it),
+// not raw 'total_reports' (anything submitted, confirmed or not), is what
+// gates report-count-based badges and the tier ladder below.
 const BADGE_DEFS = [
-  { id: 'first_report', icon: '🥇', title: 'First Report', desc: 'Submit your first report', threshold: 1, field: 'total_reports' },
-  { id: 'tide_guardian', icon: '🌊', title: 'Tide Guardian', desc: '3 reports submitted', threshold: 3, field: 'total_reports' },
+  { id: 'first_report', icon: '🥇', title: 'First Report', desc: 'Get your first report approved', threshold: 1, field: 'approved_reports' },
+  { id: 'tide_guardian', icon: '🌊', title: 'Tide Guardian', desc: '3 approved reports', threshold: 3, field: 'approved_reports' },
   { id: 'spot_mapper', icon: '📍', title: 'Spot Mapper', desc: '5 unique locations', threshold: 5, field: 'unique_locations' },
-  { id: 'reef_defender', icon: '🐚', title: 'Reef Defender', desc: '7 reports submitted', threshold: 7, field: 'total_reports' },
+  { id: 'reef_defender', icon: '🐚', title: 'Reef Defender', desc: '7 approved reports', threshold: 7, field: 'approved_reports' },
   { id: 'streak_30', icon: '🔥', title: '30-Day Streak', desc: 'Active 30 days in a row', threshold: 30, field: 'streak_days' },
   { id: 'top_100', icon: '🏆', title: 'Top 100', desc: 'Reach city rank #100 or better', threshold: 100, field: 'city_rank_inv' },
   { id: 'harbor_hero', icon: '⚓', title: 'Harbor Hero', desc: '100 kg logged', threshold: 100, field: 'total_kg' },
   { id: 'crew_leader', icon: '👥', title: 'Crew Leader', desc: '10+ volunteers mobilized', threshold: 10, field: 'total_volunteers' },
 ];
 
-// Determine current tier based on report count
-function getTier(reportCount) {
-  if (reportCount >= 7) return { label: '🐚 Reef Defender', next: null, nextAt: null };
-  if (reportCount >= 3) return { label: '🌊 Tide Guardian', next: 'Reef Defender', nextAt: 7 };
-  if (reportCount >= 1) return { label: '🥇 First Reporter', next: 'Tide Guardian', nextAt: 3 };
+// Determine current tier based on *approved* report count, not raw
+// submissions (spec §14).
+function getTier(approvedReportCount) {
+  if (approvedReportCount >= 7) return { label: '🐚 Reef Defender', next: null, nextAt: null };
+  if (approvedReportCount >= 3) return { label: '🌊 Tide Guardian', next: 'Reef Defender', nextAt: 7 };
+  if (approvedReportCount >= 1) return { label: '🥇 First Reporter', next: 'Tide Guardian', nextAt: 3 };
   return { label: '🌱 Newcomer', next: 'First Reporter', nextAt: 1 };
 }
 
@@ -25,7 +30,7 @@ function computeBadges(stats) {
   return BADGE_DEFS.map(def => {
     let progress = 0;
     switch (def.field) {
-      case 'total_reports': progress = stats.totalReports; break;
+      case 'approved_reports': progress = stats.approvedReports; break;
       case 'unique_locations': progress = stats.uniqueLocations; break;
       case 'streak_days': progress = stats.streakDays; break;
       case 'total_kg': progress = stats.totalKg; break;
@@ -73,18 +78,20 @@ export async function getCitizenStats(citizenId) {
     [citizenId]
   );
 
-  // City rank among citizens only
+  // City rank among citizens only — trust-weighted points (spec §14), not
+  // raw reported kg, so this doesn't reward volume over meaningful,
+  // confirmed contributions. Same reward_ledger-based ranking as
+  // activityService.getContributorStats.
   const rankResult = await query(
     `SELECT rank FROM (
-       SELECT a.contributor_id,
-              RANK() OVER (ORDER BY COALESCE(SUM(a.quantity), 0) DESC) AS rank
-       FROM activities a
-       JOIN users u ON u.id = a.contributor_id
-       WHERE a.contributor_id IS NOT NULL
-         AND u.role = 'citizen'
-       GROUP BY a.contributor_id
+       SELECT r.user_id,
+              RANK() OVER (ORDER BY COALESCE(SUM(r.amount), 0) DESC) AS rank
+       FROM reward_ledger r
+       JOIN users u ON u.id = r.user_id
+       WHERE u.role = 'citizen'
+       GROUP BY r.user_id
      ) ranked
-     WHERE contributor_id = $1`,
+     WHERE user_id = $1`,
     [citizenId]
   );
 
@@ -129,7 +136,7 @@ export async function getCitizenStats(citizenId) {
     memberSince: row.member_since ? new Date(row.member_since).toISOString() : null,
   };
 
-  const tier = getTier(stats.totalReports);
+  const tier = getTier(stats.approvedReports);
   const badges = computeBadges(stats);
   const earnedBadges = badges.filter(b => b.earned).length;
 
@@ -138,8 +145,8 @@ export async function getCitizenStats(citizenId) {
   let progressLabel = '';
   if (tier.next && tier.nextAt) {
     const prevAt = tier.nextAt === 3 ? 1 : tier.nextAt === 7 ? 3 : 0;
-    progressPct = Math.min(100, Math.round(((stats.totalReports - prevAt) / (tier.nextAt - prevAt)) * 100));
-    progressLabel = `${stats.totalReports} of ${tier.nextAt}`;
+    progressPct = Math.min(100, Math.round(((stats.approvedReports - prevAt) / (tier.nextAt - prevAt)) * 100));
+    progressLabel = `${stats.approvedReports} of ${tier.nextAt}`;
   }
 
   return {
@@ -153,8 +160,11 @@ export async function getCitizenStats(citizenId) {
 }
 
 /**
- * Get the weekly leaderboard — ALL citizens ranked by this week's reports.
- * Citizens with zero reports this week are included at the bottom (0 reports).
+ * Get the weekly leaderboard — ALL citizens ranked by trust-weighted points
+ * earned this week (spec §14: corroboration/verification bonuses, not raw
+ * report volume), so submitting more without it being confirmed doesn't
+ * move you up. Citizens with zero points this week are included at the
+ * bottom (0 reports, 0 points).
  */
 export async function getCitizenLeaderboard(citizenId) {
   const result = await query(
@@ -165,15 +175,22 @@ export async function getCitizenLeaderboard(citizenId) {
        u.username,
        COUNT(a.id)::int                                                 AS week_reports,
        COALESCE(SUM(a.quantity), 0)                                     AS week_kg,
-       RANK() OVER (ORDER BY COUNT(a.id) DESC, COALESCE(SUM(a.quantity),0) DESC)::int AS rank
+       COALESCE(r.week_points, 0)::int                                  AS week_points,
+       RANK() OVER (ORDER BY COALESCE(r.week_points, 0) DESC, COUNT(a.id) DESC)::int AS rank
      FROM users u
      LEFT JOIN activities a
        ON a.contributor_id = u.id
        AND a.submitted_at >= date_trunc('week', NOW())
+     LEFT JOIN (
+       SELECT user_id, SUM(amount) AS week_points
+       FROM reward_ledger
+       WHERE created_at >= date_trunc('week', NOW())
+       GROUP BY user_id
+     ) r ON r.user_id = u.id
      WHERE u.role = 'citizen'
        AND u.is_active = TRUE
-     GROUP BY u.id, u.first_name, u.last_name, u.username
-     ORDER BY rank, week_kg DESC`,
+     GROUP BY u.id, u.first_name, u.last_name, u.username, r.week_points
+     ORDER BY rank, week_reports DESC`,
     []
   );
 
@@ -185,6 +202,7 @@ export async function getCitizenLeaderboard(citizenId) {
     initials: `${r.first_name?.[0] || ''}${r.last_name?.[0] || ''}`.toUpperCase(),
     weekReports: Number(r.week_reports) || 0,
     weekKg: Number(r.week_kg) || 0,
+    weekPoints: Number(r.week_points) || 0,
     rank: Number(r.rank) || 0,
     isMe: r.citizen_id === citizenId,
   }));
