@@ -472,8 +472,17 @@ CREATE TABLE IF NOT EXISTS event_subjects (
 -- attributes nobody overrode) fall back to `source` at read time.
 ALTER TABLE event_subjects ADD COLUMN IF NOT EXISTS attribute_provenance JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+-- Additive (spec §7): "immutable history does not mean interpretations can
+-- never be corrected." A misidentified species gets a NEW event_subjects
+-- row pointing back at the one it corrects — the original row is never
+-- updated or deleted, so the first interpretation stays readable alongside
+-- the expert's. Readers treat a row as superseded when another row names
+-- it here.
+ALTER TABLE event_subjects ADD COLUMN IF NOT EXISTS corrects_event_subject_id UUID REFERENCES event_subjects(event_subject_id);
+
 CREATE INDEX IF NOT EXISTS idx_event_subjects_event_id ON event_subjects (event_id);
 CREATE INDEX IF NOT EXISTS idx_event_subjects_subject_id ON event_subjects (subject_id);
+CREATE INDEX IF NOT EXISTS idx_event_subjects_corrects ON event_subjects (corrects_event_subject_id);
 
 -- Evidence as its own entity, separate from the event it supports, so
 -- provenance survives independently of any later AI enrichment
@@ -537,6 +546,14 @@ CREATE TABLE IF NOT EXISTS event_state_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_state_history_event_id ON event_state_history (event_id, changed_at DESC);
+
+-- Additive (spec §7): subject re-identification is a third kind of change
+-- worth keeping in the same visible history as state transitions — it
+-- records who corrected an interpretation and why, while the corrected
+-- data itself lands in a new event_subjects row.
+ALTER TABLE event_state_history DROP CONSTRAINT IF EXISTS event_state_history_field_check;
+ALTER TABLE event_state_history ADD CONSTRAINT event_state_history_field_check
+    CHECK (field IN ('event_state', 'verification_state', 'subject_identification'));
 
 -- A verification pass against an event — distinct from the event's
 -- current verification_state, which is the latest rollup of these.

@@ -623,6 +623,11 @@ function mapEventSummaryRow(row) {
     organizationId: row.organization_id,
     subjects: row.subjects || [],
     corroborationCount: Number(row.corroboration_count) || 0,
+    connectionCount: Number(row.connection_count) || 0,
+    // Always an array over the wire, whatever the driver hands back — a
+    // client mapping over this shouldn't have to care how pg decoded it.
+    connectionTypes: Array.isArray(row.connection_types) ? row.connection_types : [],
+    impact: Array.isArray(row.impact) ? row.impact : [],
     sanityFlags
   };
 }
@@ -699,7 +704,35 @@ export async function listEvents({ eventState, verificationState, subjectFamily,
                UNION
                SELECT from_event_id AS other_id FROM event_relationships
                WHERE to_event_id = e.event_id AND relationship_type = 'corroborates'
-             ) AS corroborators) AS corroboration_count
+             ) AS corroborators) AS corroboration_count,
+            -- spec §16's "Connected Events": every link this event has to
+            -- another, not only corroboration — a report answered by an
+            -- action (responds_to), a follow-up survey, a duplicate, all
+            -- count as "this didn't stay an isolated record".
+            (SELECT COUNT(DISTINCT other_id) FROM (
+               SELECT to_event_id AS other_id FROM event_relationships WHERE from_event_id = e.event_id
+               UNION
+               SELECT from_event_id AS other_id FROM event_relationships WHERE to_event_id = e.event_id
+             ) AS connected) AS connection_count,
+            -- ::text is load-bearing: relationship_type is a custom enum, and
+            -- node-postgres has no parser registered for an enum array's OID,
+            -- so ARRAY_AGG over the raw enum comes back as the literal string
+            -- '{corroborates,responds_to}' instead of a JS array. Casting to
+            -- text[] hits a type pg does parse.
+            (SELECT ARRAY_AGG(DISTINCT rel_type::text) FROM (
+               SELECT relationship_type AS rel_type FROM event_relationships WHERE from_event_id = e.event_id
+               UNION
+               SELECT relationship_type AS rel_type FROM event_relationships WHERE to_event_id = e.event_id
+             ) AS rel_types) AS connection_types,
+            -- What actually changed (spec §4's "86 kg was removed" beat).
+            -- Previously only getEventDetail fetched this, so the dashboard's
+            -- "What Changed Because of You" card could say an event was
+            -- resolved but never what the resolution produced. Cast to float8
+            -- because pg hands NUMERIC back as a string.
+            (SELECT COALESCE(json_agg(json_build_object(
+               'metric', ei.metric, 'value', ei.value::float8, 'unit', ei.unit
+             ) ORDER BY ei.recorded_at DESC), '[]'::json)
+             FROM event_impact ei WHERE ei.event_id = e.event_id) AS impact
      FROM environmental_events e
      LEFT JOIN contributions c ON c.contribution_id = e.contribution_id
      LEFT JOIN event_subjects es ON es.event_id = e.event_id
@@ -741,7 +774,8 @@ export async function getEventDetail(eventId) {
     await Promise.all([
       query(
         `SELECT es.event_subject_id, es.subject_id, s.family, s.code, s.label,
-                es.attributes, es.attribute_provenance, es.source, es.confidence, es.created_at
+                es.attributes, es.attribute_provenance, es.source, es.confidence,
+                es.corrects_event_subject_id, es.created_at
          FROM event_subjects es
          JOIN subjects s ON s.subject_id = es.subject_id
          WHERE es.event_id = $1
@@ -852,6 +886,11 @@ export async function getEventDetail(eventId) {
         attributeProvenance,
         source: r.source,
         confidence: r.confidence,
+        // Set when this row is itself a correction (spec §7) — the UI reads
+        // it both ways: to label this row as the current identification, and
+        // to mark the row it names as superseded history rather than dropping
+        // it from view.
+        correctsEventSubjectId: r.corrects_event_subject_id,
         createdAt: r.created_at
       };
     }),
@@ -1090,12 +1129,20 @@ export async function getContributorImpactSummary(contributorId) {
   // contributor type instead of assuming everyone is a cleanup crew). The
   // UI derives its own per-type metric set from these rather than the
   // backend hardcoding "rescues"/"anomalies"/etc. per family.
-  const [{ rows: familyRows }, { rows: metricRows }] = await Promise.all([
+  const [{ rows: familyRows }, { rows: metricRows }, { rows: intakeRows }] = await Promise.all([
     query(
       `SELECT s.family,
               COUNT(DISTINCT es.event_id)::int AS event_count,
               COUNT(DISTINCT es.event_id) FILTER (WHERE e.event_state = 'addressed')::int AS addressed_count,
-              COUNT(DISTINCT es.event_id) FILTER (WHERE e.event_state = 'needs_attention')::int AS needs_attention_count
+              COUNT(DISTINCT es.event_id) FILTER (WHERE e.event_state = 'needs_attention')::int AS needs_attention_count,
+              -- spec §8's per-type metric examples need a third count each
+              -- beyond total/addressed: "confirmed species observations"
+              -- (verified), "recurring changes" (recurring), "observations
+              -- corroborated" (corroborated). Counted per family here so the
+              -- UI can keep choosing its own labels.
+              COUNT(DISTINCT es.event_id) FILTER (WHERE e.verification_state = 'verified')::int AS verified_count,
+              COUNT(DISTINCT es.event_id) FILTER (WHERE e.event_state = 'recurring')::int AS recurring_count,
+              COUNT(DISTINCT es.event_id) FILTER (WHERE e.verification_state = 'corroborated' OR e.event_state = 'corroborated')::int AS corroborated_count
        FROM event_subjects es
        JOIN subjects s ON s.subject_id = es.subject_id
        JOIN environmental_events e ON e.event_id = es.event_id
@@ -1112,6 +1159,27 @@ export async function getContributorImpactSummary(contributorId) {
        WHERE c.contributor_id = $1
        GROUP BY ei.metric, ei.unit`,
       [contributorId]
+    ),
+    // spec §8's research contributor ("datasets contributed", "records
+    // reused/connected"). Research isn't a subject family — a researcher's
+    // data is *about* water or life — so it can't be derived from byFamily
+    // like the other types. What distinguishes them is HOW they contribute:
+    // uploaded datasets/documents rather than field photos.
+    query(
+      `SELECT
+         COUNT(*) FILTER (WHERE c.intake_method = 'upload')::int AS datasets,
+         COUNT(*)::int AS total_contributions,
+         (SELECT COUNT(DISTINCT e2.event_id)
+          FROM environmental_events e2
+          JOIN contributions c2 ON c2.contribution_id = e2.contribution_id
+          WHERE c2.contributor_id = $1
+            AND EXISTS (
+              SELECT 1 FROM event_relationships r
+              WHERE r.from_event_id = e2.event_id OR r.to_event_id = e2.event_id
+            ))::int AS connected_events
+       FROM contributions c
+       WHERE c.contributor_id = $1`,
+      [contributorId]
     )
   ]);
 
@@ -1120,7 +1188,10 @@ export async function getContributorImpactSummary(contributorId) {
     byFamily[r.family] = {
       total: r.event_count,
       addressed: r.addressed_count,
-      needsAttention: r.needs_attention_count
+      needsAttention: r.needs_attention_count,
+      verified: r.verified_count,
+      recurring: r.recurring_count,
+      corroborated: r.corroborated_count
     };
   }
 
@@ -1128,6 +1199,8 @@ export async function getContributorImpactSummary(contributorId) {
   for (const r of metricRows) {
     byMetric[r.metric] = { value: Number(r.total) || 0, unit: r.unit || null };
   }
+
+  const intake = intakeRows[0] || {};
 
   return {
     contributions: Number(row.contributions) || 0,
@@ -1137,6 +1210,10 @@ export async function getContributorImpactSummary(contributorId) {
     locationsAffected: Number(row.locations_affected) || 0,
     byFamily,
     byMetric,
+    // Contribution *shape* rather than subject matter (spec §8's research
+    // contributor) — lets the UI recognise a researcher by how they work.
+    datasetsContributed: Number(intake.datasets) || 0,
+    connectedEvents: Number(intake.connected_events) || 0,
     trends: {
       contributions: pctChange(row.contributions_cur, row.contributions_prev),
       verifiedEvents: pctChange(row.verified_cur, row.verified_prev),
@@ -1601,4 +1678,242 @@ export async function linkEvents(fromEventId, toEventId, relationshipType, actor
   );
 
   return inserted[0]?.relationship_id || null;
+}
+
+/**
+ * getContributorStories — spec §4's "What Changed Because of You", told as
+ * the full chain rather than a status badge: you reported it → others saw
+ * the same thing → the reports were merged → someone acted → this much
+ * changed → it was verified.
+ *
+ * Deliberately its own endpoint rather than more columns on listEvents:
+ * that query feeds the map with up to 200 events, and these joins (acting
+ * organization, verifier identity) are only worth paying for on the handful
+ * of stories actually rendered.
+ *
+ * Every beat is derived from recorded data. Beats with nothing behind them
+ * are omitted rather than guessed at — a story that invents who acted is
+ * worse than a shorter one.
+ */
+export async function getContributorStories(contributorId, limit = 3) {
+  const safeLimit = Math.min(Math.max(toNumber(limit) || 3, 1), 10);
+
+  const { rows: eventRows } = await query(
+    `SELECT e.event_id, e.title, e.location_label, e.created_at, e.updated_at,
+            e.verification_state, c.intake_method
+     FROM environmental_events e
+     JOIN contributions c ON c.contribution_id = e.contribution_id
+     WHERE c.contributor_id = $1 AND e.event_state = 'addressed'
+     ORDER BY e.updated_at DESC
+     LIMIT $2`,
+    [contributorId, safeLimit]
+  );
+  if (eventRows.length === 0) return [];
+
+  const eventIds = eventRows.map((r) => r.event_id);
+
+  const [subjects, corroboration, impact, actions, verifications, closures] = await Promise.all([
+    query(
+      `SELECT es.event_id, s.family, s.code, s.label
+       FROM event_subjects es
+       JOIN subjects s ON s.subject_id = es.subject_id
+       WHERE es.event_id = ANY($1::uuid[])
+       ORDER BY es.created_at ASC`,
+      [eventIds]
+    ),
+    query(
+      `SELECT e.event_id, COUNT(DISTINCT other_id)::int AS corroborators
+       FROM environmental_events e
+       LEFT JOIN LATERAL (
+         SELECT to_event_id AS other_id FROM event_relationships
+         WHERE from_event_id = e.event_id AND relationship_type = 'corroborates'
+         UNION
+         SELECT from_event_id FROM event_relationships
+         WHERE to_event_id = e.event_id AND relationship_type = 'corroborates'
+       ) AS c ON TRUE
+       WHERE e.event_id = ANY($1::uuid[])
+       GROUP BY e.event_id`,
+      [eventIds]
+    ),
+    query(
+      `SELECT event_id, metric, value::float8 AS value, unit
+       FROM event_impact
+       WHERE event_id = ANY($1::uuid[])
+       ORDER BY recorded_at DESC`,
+      [eventIds]
+    ),
+    // The action that answered the report: an event related by 'responds_to'
+    // pointing AT this one. Its actor comes from the relationship's
+    // created_by (action events carry no contribution of their own), so the
+    // organization is resolved through that user.
+    query(
+      `SELECT r.to_event_id AS event_id, a.title AS action_title, a.occurred_at AS acted_at,
+              NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), '') AS actor_name,
+              o.name AS actor_org
+       FROM event_relationships r
+       JOIN environmental_events a ON a.event_id = r.from_event_id
+       LEFT JOIN users u ON u.id = r.created_by
+       LEFT JOIN organizations o ON o.org_id = u.organization_id
+       WHERE r.to_event_id = ANY($1::uuid[]) AND r.relationship_type = 'responds_to'
+       ORDER BY a.occurred_at DESC`,
+      [eventIds]
+    ),
+    query(
+      `SELECT v.event_id, v.created_at,
+              NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), '') AS verifier_name,
+              o.name AS verifier_org
+       FROM verifications v
+       LEFT JOIN users u ON u.id = v.verifier_id
+       LEFT JOIN organizations o ON o.org_id = u.organization_id
+       WHERE v.event_id = ANY($1::uuid[]) AND v.outcome = 'verified'
+       ORDER BY v.created_at DESC`,
+      [eventIds]
+    ),
+    // When it actually closed, rather than whenever the row last changed.
+    query(
+      `SELECT DISTINCT ON (event_id) event_id, changed_at
+       FROM event_state_history
+       WHERE event_id = ANY($1::uuid[]) AND field = 'event_state' AND new_value = 'addressed'
+       ORDER BY event_id, changed_at DESC`,
+      [eventIds]
+    )
+  ]);
+
+  const firstBy = (rows, key) => {
+    const map = new Map();
+    for (const row of rows) if (!map.has(row[key])) map.set(row[key], row);
+    return map;
+  };
+  const groupBy = (rows, key) => {
+    const map = new Map();
+    for (const row of rows) {
+      if (!map.has(row[key])) map.set(row[key], []);
+      map.get(row[key]).push(row);
+    }
+    return map;
+  };
+
+  const subjectsByEvent = groupBy(subjects.rows, 'event_id');
+  const impactByEvent = groupBy(impact.rows, 'event_id');
+  const corroborationByEvent = firstBy(corroboration.rows, 'event_id');
+  const actionByEvent = firstBy(actions.rows, 'event_id');
+  const verificationByEvent = firstBy(verifications.rows, 'event_id');
+  const closureByEvent = firstBy(closures.rows, 'event_id');
+
+  return eventRows.map((e) => {
+    const action = actionByEvent.get(e.event_id) || null;
+    const verification = verificationByEvent.get(e.event_id) || null;
+    const corroborators = corroborationByEvent.get(e.event_id)?.corroborators || 0;
+    return {
+      eventId: e.event_id,
+      title: e.title,
+      locationLabel: e.location_label,
+      reportedAt: e.created_at,
+      closedAt: closureByEvent.get(e.event_id)?.changed_at || e.updated_at,
+      intakeMethod: e.intake_method,
+      verificationState: e.verification_state,
+      subjects: (subjectsByEvent.get(e.event_id) || [])
+        .map((s) => ({ family: s.family, code: s.code, label: s.label })),
+      corroboratorCount: corroborators,
+      // What the contributor sees as "N reports merged into one event" —
+      // their own plus everyone who corroborated it.
+      mergedReportCount: corroborators > 0 ? corroborators + 1 : 0,
+      action: action && {
+        title: action.action_title,
+        actedAt: action.acted_at,
+        actorName: action.actor_name,
+        actorOrg: action.actor_org
+      },
+      impact: (impactByEvent.get(e.event_id) || [])
+        .map((i) => ({ metric: i.metric, value: i.value, unit: i.unit })),
+      verification: verification && {
+        verifiedAt: verification.created_at,
+        verifierName: verification.verifier_name,
+        verifierOrg: verification.verifier_org
+      }
+    };
+  });
+}
+
+/**
+ * correctSubject — spec §7's "a species may initially be identified
+ * incorrectly, later an expert may correct it". Appends a new
+ * event_subjects row carrying the corrected identification and points it
+ * back at the row it supersedes; the original row is never updated or
+ * deleted, so both interpretations stay readable and the first one keeps
+ * whatever provenance it was submitted with. The correction itself is
+ * logged to event_state_history so who changed it, when, and why stay
+ * visible alongside the event's other state changes.
+ */
+export async function correctSubject(eventSubjectId, { verifierId, family, code, attributes, note }) {
+  if (!UUID_PATTERN.test(eventSubjectId || '')) {
+    throw new Error('Subject not found');
+  }
+
+  const { rows: existingRows } = await query(
+    `SELECT es.event_subject_id, es.event_id, s.family AS old_family, s.code AS old_code
+     FROM event_subjects es
+     JOIN subjects s ON s.subject_id = es.subject_id
+     WHERE es.event_subject_id = $1`,
+    [eventSubjectId]
+  );
+  const existing = existingRows[0];
+  if (!existing) {
+    throw new Error('Subject not found');
+  }
+
+  // A correction may only land on a family/code that actually exists in the
+  // taxonomy — same rule the AI classifier is held to, so a human correction
+  // can't introduce a subject the rest of the system can't interpret.
+  const { rows: taxonomyRows } = await query(
+    `SELECT subject_id FROM subjects WHERE family = $1 AND code = $2 AND is_active = true`,
+    [family, code]
+  );
+  const taxonomyRow = taxonomyRows[0];
+  if (!taxonomyRow) {
+    throw new Error(`Unknown subject: ${family}/${code}`);
+  }
+
+  // Already-superseded rows are the history, not the current reading — a
+  // correction has to be made against whatever supersedes them instead.
+  const { rows: supersededRows } = await query(
+    `SELECT 1 FROM event_subjects WHERE corrects_event_subject_id = $1 LIMIT 1`,
+    [eventSubjectId]
+  );
+  if (supersededRows.length > 0) {
+    throw new Error('This subject has already been corrected — correct the current identification instead');
+  }
+
+  const sanitizedAttributes = sanitizeSubjectAttributes(family, attributes);
+  const attributeProvenance = Object.fromEntries(
+    Object.keys(sanitizedAttributes).map((key) => [key, 'verifier_confirmed'])
+  );
+
+  const { rows: inserted } = await query(
+    `INSERT INTO event_subjects
+       (event_id, subject_id, attributes, attribute_provenance, source, confidence, corrects_event_subject_id)
+     VALUES ($1, $2, $3, $4, 'verifier_confirmed', NULL, $5)
+     RETURNING event_subject_id`,
+    [
+      existing.event_id,
+      taxonomyRow.subject_id,
+      JSON.stringify(sanitizedAttributes),
+      JSON.stringify(attributeProvenance),
+      eventSubjectId
+    ]
+  );
+
+  await query(
+    `INSERT INTO event_state_history (event_id, field, old_value, new_value, changed_by, note)
+     VALUES ($1, 'subject_identification', $2, $3, $4, $5)`,
+    [
+      existing.event_id,
+      `${existing.old_family}/${existing.old_code}`,
+      `${family}/${code}`,
+      verifierId,
+      note || null
+    ]
+  );
+
+  return { eventSubjectId: inserted[0].event_subject_id, eventId: existing.event_id };
 }

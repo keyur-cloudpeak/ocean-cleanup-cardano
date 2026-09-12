@@ -37,4 +37,10 @@ router.post('/:id/verify', authenticate, authorizeRoles('verifier', 'admin'), ev
 // etc.) — same audience as plan/complete above.
 router.post('/:id/relate', authenticate, authorizeRoles('contributor', 'verifier', 'admin'), eventController.relate);
 
+// Correct an earlier identification (spec §7). Gated like verify rather
+// than like relate: re-identifying someone else's observation is an expert
+// judgement on the evidence, not something the original contributor should
+// be able to quietly rewrite about their own report.
+router.post('/:id/subjects/:eventSubjectId/correct', authenticate, authorizeRoles('verifier', 'admin'), eventController.correctSubject);
+
 export default router;

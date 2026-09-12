@@ -2,6 +2,12 @@ import { env } from '../config/env.js';
 import { query } from '../config/connection.js';
 import { LIFE_CONDITION_VALUES, LIFE_OUTCOME_VALUES, HABITAT_CONDITION_VALUES, sanitizeSubjectAttributes } from '../constants/subjectAttributes.js';
 
+// Ceiling on how many subjects one inference may propose. Kept in step with
+// the "1 to 6 entries" instruction in SYSTEM_PROMPT below — the model is told
+// the same number this enforces, so a truncation here would mean the model
+// ignored the prompt rather than that the limit is too low.
+const MAX_SUBJECTS = 6;
+
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 const OPENAI_TRANSCRIBE_URL = 'https://api.openai.com/v1/audio/transcriptions';
 const FETCH_TIMEOUT_MS = 20000;
@@ -66,7 +72,7 @@ Respond with ONLY a JSON object, no other text, in exactly this shape:
 }
 
 Rules:
-- "subjects" — 1 to 4 entries, each confidence between 0 and 1, most relevant first.
+- "subjects" — 1 to 6 entries, each confidence between 0 and 1, most relevant first. One scene legitimately reaches six: a ghost net, two turtles with different fates, the reef it was snagged on, and the removal action are six distinct subjects, not four. Report only what the input actually evidences — never pad toward six.
 - "attributes" (optional, per subject) — only include it when you can tell one of these from the input, and only using these exact values:
   - a "life" subject may carry "condition" (the state it was found in), one of: ${LIFE_CONDITION_VALUES.join(', ')}
   - a "life" subject may separately carry "outcome" (what happened to it as a result of any action taken — distinct from "condition"), one of: ${LIFE_OUTCOME_VALUES.join(', ')}
@@ -84,7 +90,11 @@ function validateInference(raw, taxonomy) {
   const subjects = Array.isArray(raw.subjects)
     ? raw.subjects
         .filter((s) => s && validPairs.has(`${s.family}:${s.code}`))
-        .slice(0, 4)
+        // 6, not 4 (spec §12): the spec's own worked scene — ghost net +
+        // two turtles with different outcomes + coral reef + removal — is
+        // five subjects, so a cap of four silently dropped one of them.
+        // The DB write path has never capped; this was the only limit.
+        .slice(0, MAX_SUBJECTS)
         .map((s) => {
           const taxonomyEntry = taxonomy.find((t) => t.family === s.family && t.code === s.code);
           // Same vocabulary check the DB write path re-applies (spec §17:
@@ -129,7 +139,12 @@ async function callOpenAi(messages) {
       body: JSON.stringify({
         model: env.openaiModel,
         response_format: { type: 'json_object' },
-        max_tokens: 500,
+        // Headroom for a full six-subject response with attributes. Only
+        // tokens actually generated are billed, so the higher ceiling costs
+        // nothing on a typical one- or two-subject reply — it just stops a
+        // rich scene from being cut mid-JSON, which fails parsing outright
+        // rather than degrading gracefully.
+        max_tokens: 700,
         messages
       }),
       signal: controller.signal

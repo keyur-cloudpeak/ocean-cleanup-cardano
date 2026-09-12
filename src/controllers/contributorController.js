@@ -1,5 +1,5 @@
 import { getContributorStats, getContributorInsights, getContributorExportSummary, getContributorExportActivities } from '../services/activityService.js';
-import { getContributorImpactSummary } from '../services/environmentalEventService.js';
+import { getContributorImpactSummary, getContributorStories } from '../services/environmentalEventService.js';
 import { findUserById } from '../services/userService.js';
 import { streamContributorReportPdf } from '../services/reportPdfService.js';
 import asyncHandler from '../middleware/asyncHandler.js';
@@ -49,6 +49,18 @@ async function getImpact(req, res) {
 }
 
 /**
+ * GET /api/contributor/stories?limit=3
+ * The full outcome chain behind the contributor's most recently resolved
+ * reports (spec §4) — who else saw it, how the reports were merged, who
+ * acted, what changed, who verified it. Beats with no recorded data are
+ * omitted by the service rather than guessed at.
+ */
+async function getStories(req, res) {
+  const stories = await getContributorStories(req.user.id, req.query.limit);
+  res.json({ ok: true, stories });
+}
+
+/**
  * GET /api/contributor/export?from=YYYY-MM-DD&to=YYYY-MM-DD&format=pdf
  * Streams a PDF field report of the authenticated contributor's approved
  * activities within the given date range (defaults to the last 6 months).
@@ -90,5 +102,6 @@ export default {
   getStats: asyncHandler(getStats),
   getInsights: asyncHandler(getInsights),
   getImpact: asyncHandler(getImpact),
+  getStories: asyncHandler(getStories),
   exportReport: asyncHandler(exportReport)
 };
