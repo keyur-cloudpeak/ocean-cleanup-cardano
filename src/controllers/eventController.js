@@ -1,5 +1,6 @@
 import {
-  listEvents, getEventDetail, listSubjects, planActionForEvent, completeAction, linkEvents, verifyEvent
+  listEvents, getEventDetail, listSubjects, planActionForEvent, completeAction, linkEvents, verifyEvent,
+  correctSubject as correctSubjectRecord
 } from '../services/environmentalEventService.js';
 import { getVerificationProof } from '../services/onchainProofService.js';
 import { uploadMultipleFiles, uploadMultipleBase64 } from '../utils/mediaUpload.js';
@@ -71,7 +72,13 @@ async function planAction(req, res) {
  * to go instead of only the kg number being recorded.
  */
 async function complete(req, res) {
-  const { kgRemoved, note, imageUrls } = req.body;
+  const { kgRemoved, note, imageUrls, impacts: impactsRaw } = req.body;
+  let impacts;
+  try {
+    impacts = impactsRaw ? (typeof impactsRaw === 'string' ? JSON.parse(impactsRaw) : impactsRaw) : undefined;
+  } catch {
+    impacts = undefined;
+  }
 
   let images = [];
   try {
@@ -89,7 +96,7 @@ async function complete(req, res) {
 
   let closedEventIds;
   try {
-    closedEventIds = await completeAction(req.params.id, { actorId: req.user.id, kgRemoved, note, images });
+    closedEventIds = await completeAction(req.params.id, { actorId: req.user.id, kgRemoved, impacts, note, images });
   } catch (err) {
     return res.status(400).json({ ok: false, error: err.message });
   }
@@ -148,6 +155,31 @@ async function relate(req, res) {
 }
 
 /**
+ * POST /api/events/:id/subjects/:eventSubjectId/correct
+ * Spec §7: an expert corrects an earlier identification (e.g. a species
+ * read wrong at intake). Appends the corrected reading as a new subject
+ * row rather than editing the original, so the first interpretation stays
+ * in the record next to the corrected one.
+ */
+async function correctSubject(req, res) {
+  const { family, code, attributes, note } = req.body;
+  if (!family || !code) {
+    return res.status(400).json({ ok: false, error: 'family and code are required' });
+  }
+
+  try {
+    await correctSubjectRecord(req.params.eventSubjectId, {
+      verifierId: req.user.id, family, code, attributes, note
+    });
+  } catch (err) {
+    return res.status(400).json({ ok: false, error: err.message });
+  }
+
+  const event = await getEventDetail(req.params.id);
+  res.status(201).json({ ok: true, event });
+}
+
+/**
  * GET /api/events/verifications/:verificationId/proof
  * Mirrors GET /api/activities/:id/proof (spec §21) for a verifier
  * attestation instead of the original activity — the proof an
@@ -175,5 +207,6 @@ export default {
   complete: asyncHandler(complete),
   verify: asyncHandler(verify),
   relate: asyncHandler(relate),
+  correctSubject: asyncHandler(correctSubject),
   verificationProof: asyncHandler(verificationProof)
 };

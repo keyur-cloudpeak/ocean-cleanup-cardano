@@ -13,6 +13,9 @@ router.get('/insights', authenticate, authorizeRoles('contributor', 'admin'), re
 // GET /api/contributor/impact — the "Your Impact" event-model summary
 router.get('/impact', authenticate, authorizeRoles('contributor', 'admin'), requireAuthenticatedUser, contributorController.getImpact);
 
+// GET /api/contributor/stories — full outcome chains for "What Changed Because of You"
+router.get('/stories', authenticate, authorizeRoles('contributor', 'admin'), requireAuthenticatedUser, contributorController.getStories);
+
 // GET /api/contributor/export — PDF field report of the contributor's approved activities
 router.get('/export', authenticate, authorizeRoles('contributor', 'admin'), requireAuthenticatedUser, contributorController.exportReport);
 

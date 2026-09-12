@@ -7,6 +7,7 @@ import { recordVerificationOnChain } from './onchainProofService.js';
 import { fetchLocationContext } from './locationEnrichmentService.js';
 import { logExternalEnrichment } from './externalEnrichmentService.js';
 import { computeConfidenceSignals } from './confidenceSignalService.js';
+import { awardCorroborationPoints, awardVerificationPoints } from './rewardLedgerService.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -107,47 +108,70 @@ export async function createEventForActivity(activity, options = {}) {
        WHERE (family, code) IN (${aiSubjects.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2})`).join(', ')})`,
       aiSubjects.flatMap((s) => [s.family, s.code])
     );
-    subjectsToInsert = rows.map((row) => {
-      const match = aiSubjects.find((s) => s.family === row.family && s.code === row.code);
-      // Callers that build subjects directly (e.g. the measurement intake,
-      // which knows its own provenance — instrument reading vs. informal
-      // observation) can override source/attributes per subject; AI intake
-      // leaves both unset and gets the historical defaults.
-      const source = match?.source || 'ai_inferred';
-      // The vocabulary (spec §7.3-7.4 condition enums, §7.1 free-text
-      // severity/hazard) is re-validated here rather than trusted from the
-      // request body — aiInferenceService already applies the same check
-      // to what the model returns, but this endpoint accepts client-built
-      // `attributes` too (measurement intake, and anything a future
-      // manual-edit UI sends), so nothing reaches the DB unsanitized.
-      const ontologyAttributes = sanitizeSubjectAttributes(row.family, match?.attributes);
-      // A measurement-intake subject supplies its own attributes wholesale
-      // (e.g. {value, unit}) and isn't part of the ontology's condition/
-      // severity vocabulary, so it passes through as-is alongside — not
-      // instead of — whatever sanitizeSubjectAttributes recognized.
-      const passthroughAttributes = match?.attributes && Object.keys(ontologyAttributes).length === 0
-        ? match.attributes : {};
-      // quantity_kg only applies to pollution_waste, and only as a
-      // fallback when the caller didn't already supply one (measurement
-      // intake's {value, unit} has no quantity_kg concept at all).
-      const needsQuantityFallback = row.family === 'pollution_waste'
-        && !('quantity_kg' in passthroughAttributes) && !('quantity_kg' in ontologyAttributes);
-      const attributes = { ...passthroughAttributes, ...ontologyAttributes };
-      if (needsQuantityFallback) attributes.quantity_kg = Number(activity.quantity) || 0;
+    // One taxonomy lookup per distinct (family, code) — but one output row
+    // per *input* subject. Iterating aiSubjects (not rows) matters: two
+    // entries sharing the same family/code (e.g. two `life:sea_turtle`
+    // entries from a report with one entangled and one deceased turtle)
+    // must each become their own event_subjects row, not collapse into a
+    // single one that silently drops the second individual's attributes.
+    const subjectIdByKey = new Map(rows.map((row) => [`${row.family}:${row.code}`, row.subject_id]));
+    subjectsToInsert = aiSubjects
+      .filter((match) => subjectIdByKey.has(`${match.family}:${match.code}`))
+      .map((match) => {
+        const subjectId = subjectIdByKey.get(`${match.family}:${match.code}`);
+        // Callers that build subjects directly (e.g. the measurement intake,
+        // which knows its own provenance — instrument reading vs. informal
+        // observation) can override source/attributes per subject; AI intake
+        // leaves both unset and gets the historical defaults.
+        const source = match.source || 'ai_inferred';
+        // The vocabulary (spec §7.3-7.4 condition enums, §7.1 free-text
+        // severity/hazard) is re-validated here rather than trusted from the
+        // request body — aiInferenceService already applies the same check
+        // to what the model returns, but this endpoint accepts client-built
+        // `attributes` too (measurement intake, and anything a future
+        // manual-edit UI sends), so nothing reaches the DB unsanitized.
+        const ontologyAttributes = sanitizeSubjectAttributes(match.family, match.attributes);
+        // A measurement-intake subject supplies its own attributes wholesale
+        // (e.g. {value, unit}) and isn't part of the ontology's condition/
+        // severity vocabulary, so it passes through as-is alongside — not
+        // instead of — whatever sanitizeSubjectAttributes recognized.
+        const passthroughAttributes = match.attributes && Object.keys(ontologyAttributes).length === 0
+          ? match.attributes : {};
+        // quantity_kg only applies to pollution_waste, and only as a
+        // fallback when the caller didn't already supply one (measurement
+        // intake's {value, unit} has no quantity_kg concept at all).
+        const needsQuantityFallback = match.family === 'pollution_waste'
+          && !('quantity_kg' in passthroughAttributes) && !('quantity_kg' in ontologyAttributes);
+        const attributes = { ...passthroughAttributes, ...ontologyAttributes };
+        if (needsQuantityFallback) attributes.quantity_kg = Number(activity.quantity) || 0;
 
-      const overrides = { ...(match?.attributeProvenance || {}) };
-      if (needsQuantityFallback && quantityProvenance) overrides.quantity_kg = quantityProvenance;
+        const overrides = { ...(match.attributeProvenance || {}) };
+        if (needsQuantityFallback && quantityProvenance) overrides.quantity_kg = quantityProvenance;
 
-      return {
-        subjectId: row.subject_id,
-        code: row.code,
-        confidence: match?.confidence ?? null,
-        source,
-        attributes,
-        attributeProvenance: withAttributeProvenance(attributes, source, overrides)
-      };
-    });
-  } else {
+        return {
+          subjectId,
+          code: match.code,
+          confidence: match.confidence ?? null,
+          source,
+          attributes,
+          attributeProvenance: withAttributeProvenance(attributes, source, overrides)
+        };
+      });
+  } else if (!intakeMethod) {
+    // The category-derived pollution_waste fallback only makes sense for a
+    // genuinely pre-AI submission — the legacy wizard/mobile-app path that
+    // has no concept of `intakeMethod` at all and really is always a
+    // cleanup report. A submission tagged with a modern intake method
+    // (photo_video, tell_blue_mind, measurement, upload) that came back
+    // with zero AI subjects — a failed/timed-out inference call, say — must
+    // NOT be guessed as pollution_waste here: a wildlife sighting or
+    // water-quality reading with a broken AI call would otherwise be
+    // silently mislabeled as cleanup debris, exactly the "everything is
+    // cleanup" behavior the universal-contributor model removes. Falling
+    // through with zero subjects means no event is created for it (see the
+    // length check below) — the activity record itself is still saved, so
+    // nothing is lost, it's just left for a verifier to classify by hand
+    // rather than guessed wrong automatically.
     const subjectCode = CATEGORY_TO_SUBJECT_CODE[activity.category] || 'mixed_waste';
     const { rows } = await query(
       `SELECT subject_id FROM subjects WHERE family = 'pollution_waste' AND code = $1`,
@@ -161,6 +185,8 @@ export async function createEventForActivity(activity, options = {}) {
         attributeProvenance: withAttributeProvenance(attributes, 'user_provided', quantityProvenance ? { quantity_kg: quantityProvenance } : {})
       };
     });
+  } else {
+    subjectsToInsert = [];
   }
   if (subjectsToInsert.length === 0) return null;
 
@@ -549,6 +575,25 @@ async function bumpTowardCorroborated(current, corroboratingCount) {
     `UPDATE environmental_events SET event_state = $2, verification_state = $3, updated_at = NOW() WHERE event_id = $1`,
     [current.event_id, nextEventState, nextVerificationState]
   );
+
+  // Trust-weighted points (spec §14): the original contributor earns a
+  // corroboration bonus the moment independent reports push their
+  // submission's verification_state forward — not for how much they
+  // reported, for being confirmed by someone else.
+  if (nextVerificationState !== current.verification_state) {
+    const { rows: contribRows } = await query(
+      `SELECT c.contributor_id FROM environmental_events e
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE e.event_id = $1`,
+      [current.event_id]
+    );
+    const contributorId = contribRows[0]?.contributor_id;
+    if (contributorId) {
+      await awardCorroborationPoints({ eventId: current.event_id, userId: contributorId }).catch((err) =>
+        console.error('[rewardLedgerService] corroboration points failed for event', current.event_id, ':', err.message)
+      );
+    }
+  }
 }
 
 function mapEventSummaryRow(row) {
@@ -578,6 +623,12 @@ function mapEventSummaryRow(row) {
     organizationId: row.organization_id,
     subjects: row.subjects || [],
     corroborationCount: Number(row.corroboration_count) || 0,
+    connectionCount: Number(row.connection_count) || 0,
+    // Always an array over the wire, whatever the driver hands back — a
+    // client mapping over this shouldn't have to care how pg decoded it.
+    connectionTypes: Array.isArray(row.connection_types) ? row.connection_types : [],
+    impact: Array.isArray(row.impact) ? row.impact : [],
+    evidenceUrls: Array.isArray(row.evidence_urls) ? row.evidence_urls.filter(Boolean) : [],
     sanityFlags
   };
 }
@@ -641,12 +692,22 @@ export async function listEvents({ eventState, verificationState, subjectFamily,
   const result = await query(
     `SELECT e.event_id, e.legacy_activity_id, e.title, e.description, e.event_state, e.verification_state,
             e.occurred_at, e.lat, e.lon, e.location_label, e.created_at, e.updated_at, c.organization_id,
-            COALESCE(
-              json_agg(DISTINCT jsonb_build_object(
-                'subjectId', s.subject_id, 'family', s.family, 'code', s.code, 'label', s.label
-              )) FILTER (WHERE s.subject_id IS NOT NULL),
-              '[]'
-            ) AS subjects,
+            -- Ordered by what the event is about, not by jsonb value.
+            -- json_agg(DISTINCT ...) sorts by the serialized object, so
+            -- "subjects[0]" was effectively arbitrary and could surface the
+            -- human_action ("Cleanup / removal") as the event's own name.
+            (SELECT COALESCE(json_agg(sub ORDER BY sub->>'rank', sub->>'label'), '[]'::json)
+             FROM (
+               SELECT DISTINCT jsonb_build_object(
+                 'subjectId', s2.subject_id, 'family', s2.family, 'code', s2.code, 'label', s2.label,
+                 'rank', CASE s2.family
+                   WHEN 'pollution_waste' THEN '0' WHEN 'life' THEN '1' WHEN 'habitat' THEN '2'
+                   WHEN 'water' THEN '3' WHEN 'conditions' THEN '4' ELSE '5' END
+               ) AS sub
+               FROM event_subjects es2
+               JOIN subjects s2 ON s2.subject_id = es2.subject_id
+               WHERE es2.event_id = e.event_id
+             ) ordered_subjects) AS subjects,
             (SELECT COUNT(*) FROM evidence ev WHERE ev.event_id = e.event_id) AS evidence_count,
             (SELECT COUNT(DISTINCT other_id) FROM (
                SELECT to_event_id AS other_id FROM event_relationships
@@ -654,7 +715,44 @@ export async function listEvents({ eventState, verificationState, subjectFamily,
                UNION
                SELECT from_event_id AS other_id FROM event_relationships
                WHERE to_event_id = e.event_id AND relationship_type = 'corroborates'
-             ) AS corroborators) AS corroboration_count
+             ) AS corroborators) AS corroboration_count,
+            -- spec §16's "Connected Events": every link this event has to
+            -- another, not only corroboration — a report answered by an
+            -- action (responds_to), a follow-up survey, a duplicate, all
+            -- count as "this didn't stay an isolated record".
+            (SELECT COUNT(DISTINCT other_id) FROM (
+               SELECT to_event_id AS other_id FROM event_relationships WHERE from_event_id = e.event_id
+               UNION
+               SELECT from_event_id AS other_id FROM event_relationships WHERE to_event_id = e.event_id
+             ) AS connected) AS connection_count,
+            -- ::text is load-bearing: relationship_type is a custom enum, and
+            -- node-postgres has no parser registered for an enum array's OID,
+            -- so ARRAY_AGG over the raw enum comes back as the literal string
+            -- '{corroborates,responds_to}' instead of a JS array. Casting to
+            -- text[] hits a type pg does parse.
+            (SELECT ARRAY_AGG(DISTINCT rel_type::text) FROM (
+               SELECT relationship_type AS rel_type FROM event_relationships WHERE from_event_id = e.event_id
+               UNION
+               SELECT relationship_type AS rel_type FROM event_relationships WHERE to_event_id = e.event_id
+             ) AS rel_types) AS connection_types,
+            -- What actually changed (spec §4's "86 kg was removed" beat).
+            -- Previously only getEventDetail fetched this, so the dashboard's
+            -- "What Changed Because of You" card could say an event was
+            -- resolved but never what the resolution produced. Cast to float8
+            -- because pg hands NUMERIC back as a string.
+            (SELECT COALESCE(json_agg(json_build_object(
+               'metric', ei.metric, 'value', ei.value::float8, 'unit', ei.unit
+             ) ORDER BY ei.recorded_at DESC), '[]'::json)
+             FROM event_impact ei WHERE ei.event_id = e.event_id) AS impact,
+            -- Evidence thumbnails, so one card design can serve both
+            -- legacy-backed events (which have photos) and event-model-only
+            -- ones (which may not) without the page falling back to the old
+            -- activities table to find an image.
+            (SELECT COALESCE(json_agg(ev.gateway_url ORDER BY ev.created_at ASC), '[]'::json)
+             FROM evidence ev
+             WHERE ev.event_id = e.event_id
+               AND ev.gateway_url IS NOT NULL
+               AND ev.evidence_type IN ('photo', 'video')) AS evidence_urls
      FROM environmental_events e
      LEFT JOIN contributions c ON c.contribution_id = e.contribution_id
      LEFT JOIN event_subjects es ON es.event_id = e.event_id
@@ -696,7 +794,8 @@ export async function getEventDetail(eventId) {
     await Promise.all([
       query(
         `SELECT es.event_subject_id, es.subject_id, s.family, s.code, s.label,
-                es.attributes, es.attribute_provenance, es.source, es.confidence, es.created_at
+                es.attributes, es.attribute_provenance, es.source, es.confidence,
+                es.corrects_event_subject_id, es.created_at
          FROM event_subjects es
          JOIN subjects s ON s.subject_id = es.subject_id
          WHERE es.event_id = $1
@@ -807,6 +906,11 @@ export async function getEventDetail(eventId) {
         attributeProvenance,
         source: r.source,
         confidence: r.confidence,
+        // Set when this row is itself a correction (spec §7) — the UI reads
+        // it both ways: to label this row as the current identification, and
+        // to mark the row it names as superseded history rather than dropping
+        // it from view.
+        correctsEventSubjectId: r.corrects_event_subject_id,
         createdAt: r.created_at
       };
     }),
@@ -1040,12 +1144,96 @@ export async function getContributorImpactSummary(contributorId) {
   );
 
   const row = rows[0] || {};
+
+  // Generic, family-agnostic breakdowns (spec §8/§16: metrics must adapt to
+  // contributor type instead of assuming everyone is a cleanup crew). The
+  // UI derives its own per-type metric set from these rather than the
+  // backend hardcoding "rescues"/"anomalies"/etc. per family.
+  const [{ rows: familyRows }, { rows: metricRows }, { rows: intakeRows }] = await Promise.all([
+    query(
+      `SELECT s.family,
+              COUNT(DISTINCT es.event_id)::int AS event_count,
+              COUNT(DISTINCT es.event_id) FILTER (WHERE e.event_state = 'addressed')::int AS addressed_count,
+              COUNT(DISTINCT es.event_id) FILTER (WHERE e.event_state = 'needs_attention')::int AS needs_attention_count,
+              -- spec §8's per-type metric examples need a third count each
+              -- beyond total/addressed: "confirmed species observations"
+              -- (verified), "recurring changes" (recurring), "observations
+              -- corroborated" (corroborated). Counted per family here so the
+              -- UI can keep choosing its own labels.
+              COUNT(DISTINCT es.event_id) FILTER (WHERE e.verification_state = 'verified')::int AS verified_count,
+              COUNT(DISTINCT es.event_id) FILTER (WHERE e.event_state = 'recurring')::int AS recurring_count,
+              COUNT(DISTINCT es.event_id) FILTER (WHERE e.verification_state = 'corroborated' OR e.event_state = 'corroborated')::int AS corroborated_count
+       FROM event_subjects es
+       JOIN subjects s ON s.subject_id = es.subject_id
+       JOIN environmental_events e ON e.event_id = es.event_id
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE c.contributor_id = $1
+       GROUP BY s.family`,
+      [contributorId]
+    ),
+    query(
+      `SELECT ei.metric, ei.unit, COALESCE(SUM(ei.value), 0) AS total
+       FROM event_impact ei
+       JOIN environmental_events e ON e.event_id = ei.event_id
+       JOIN contributions c ON c.contribution_id = e.contribution_id
+       WHERE c.contributor_id = $1
+       GROUP BY ei.metric, ei.unit`,
+      [contributorId]
+    ),
+    // spec §8's research contributor ("datasets contributed", "records
+    // reused/connected"). Research isn't a subject family — a researcher's
+    // data is *about* water or life — so it can't be derived from byFamily
+    // like the other types. What distinguishes them is HOW they contribute:
+    // uploaded datasets/documents rather than field photos.
+    query(
+      `SELECT
+         COUNT(*) FILTER (WHERE c.intake_method = 'upload')::int AS datasets,
+         COUNT(*)::int AS total_contributions,
+         (SELECT COUNT(DISTINCT e2.event_id)
+          FROM environmental_events e2
+          JOIN contributions c2 ON c2.contribution_id = e2.contribution_id
+          WHERE c2.contributor_id = $1
+            AND EXISTS (
+              SELECT 1 FROM event_relationships r
+              WHERE r.from_event_id = e2.event_id OR r.to_event_id = e2.event_id
+            ))::int AS connected_events
+       FROM contributions c
+       WHERE c.contributor_id = $1`,
+      [contributorId]
+    )
+  ]);
+
+  const byFamily = {};
+  for (const r of familyRows) {
+    byFamily[r.family] = {
+      total: r.event_count,
+      addressed: r.addressed_count,
+      needsAttention: r.needs_attention_count,
+      verified: r.verified_count,
+      recurring: r.recurring_count,
+      corroborated: r.corroborated_count
+    };
+  }
+
+  const byMetric = {};
+  for (const r of metricRows) {
+    byMetric[r.metric] = { value: Number(r.total) || 0, unit: r.unit || null };
+  }
+
+  const intake = intakeRows[0] || {};
+
   return {
     contributions: Number(row.contributions) || 0,
     verifiedEvents: Number(row.verified_events) || 0,
     actionsCompleted: Number(row.actions_completed) || 0,
     kgRemoved: Number(row.kg_removed) || 0,
     locationsAffected: Number(row.locations_affected) || 0,
+    byFamily,
+    byMetric,
+    // Contribution *shape* rather than subject matter (spec §8's research
+    // contributor) — lets the UI recognise a researcher by how they work.
+    datasetsContributed: Number(intake.datasets) || 0,
+    connectedEvents: Number(intake.connected_events) || 0,
     trends: {
       contributions: pctChange(row.contributions_cur, row.contributions_prev),
       verifiedEvents: pctChange(row.verified_cur, row.verified_prev),
@@ -1164,7 +1352,7 @@ export async function planActionForEvent(observationEventId, { actorId, subjectC
  * 'addressed' is about the action being done, not the report being
  * confirmed resolved.
  */
-export async function completeAction(actionEventId, { actorId, kgRemoved, note, images }) {
+export async function completeAction(actionEventId, { actorId, kgRemoved, impacts, note, images }) {
   const { rows } = await query(
     `SELECT event_state FROM environmental_events WHERE event_id = $1`,
     [actionEventId]
@@ -1196,10 +1384,21 @@ export async function completeAction(actionEventId, { actorId, kgRemoved, note, 
     );
   }
 
-  if (kgRemoved != null && Number(kgRemoved) > 0) {
+  // Generic outcome recording (spec §7/§11): a rescue writes
+  // {metric:'lives_rescued', value:1, unit:'count'}, a restoration action
+  // writes {metric:'condition_change', ...} — not every action is
+  // kg-removed. `kgRemoved` stays as a convenience shorthand for the
+  // cleanup case rather than a required/only shape.
+  const impactEntries = [
+    ...(kgRemoved != null && Number(kgRemoved) > 0
+      ? [{ metric: 'debris_removed_kg', value: Number(kgRemoved), unit: 'kg' }]
+      : []),
+    ...(Array.isArray(impacts) ? impacts.filter((i) => i && i.metric && i.value != null) : [])
+  ];
+  for (const { metric, value, unit } of impactEntries) {
     await query(
-      `INSERT INTO event_impact (event_id, metric, value, unit) VALUES ($1, 'debris_removed_kg', $2, 'kg')`,
-      [actionEventId, Number(kgRemoved)]
+      `INSERT INTO event_impact (event_id, metric, value, unit) VALUES ($1, $2, $3, $4)`,
+      [actionEventId, metric, Number(value), unit || null]
     );
   }
 
@@ -1272,12 +1471,24 @@ async function getContributorsToNotify(eventId) {
   return rows.map((r) => r.contributor_id);
 }
 
+// What the event is *about*, for the one-line notification subject.
+// human_action is ranked last deliberately: a cleanup is what people did
+// about the event, not what the event is, and ordering by confidence alone
+// let it win (a contributor-confirmed action carries confidence 1.0), which
+// produced "Cleanup / removal reported near X has been addressed" instead
+// of naming the ghost net.
 async function getPrimarySubjectLabel(eventId) {
   const { rows } = await query(
     `SELECT s.label FROM event_subjects es
      JOIN subjects s ON s.subject_id = es.subject_id
      WHERE es.event_id = $1
-     ORDER BY es.confidence DESC NULLS LAST, es.created_at ASC
+     ORDER BY
+       CASE s.family
+         WHEN 'pollution_waste' THEN 0 WHEN 'life' THEN 1 WHEN 'habitat' THEN 2
+         WHEN 'water' THEN 3 WHEN 'conditions' THEN 4 ELSE 5
+       END,
+       es.confidence DESC NULLS LAST,
+       es.created_at ASC
      LIMIT 1`,
     [eventId]
   );
@@ -1289,7 +1500,7 @@ async function getPrimarySubjectLabel(eventId) {
 // looked up individually — contributors span both the 'contributor' and
 // 'citizen' roles, and notifications.recipient_role must match whichever
 // one a given person actually has.
-async function notifyEventClosure(eventId, { locationLabel, kgRemoved }) {
+async function notifyEventClosure(eventId, { locationLabel, impacts }) {
   const [subjectLabel, contributorIds] = await Promise.all([
     getPrimarySubjectLabel(eventId),
     getContributorsToNotify(eventId)
@@ -1303,7 +1514,7 @@ async function notifyEventClosure(eventId, { locationLabel, kgRemoved }) {
       contributorRole: contributor.role,
       subjectLabel,
       locationLabel,
-      kgRemoved,
+      impacts,
       eventId
     });
   }
@@ -1371,6 +1582,22 @@ export async function verifyEvent(eventId, { verifierId, outcome, notes }) {
         `UPDATE environmental_events SET verification_state = 'verified', updated_at = NOW() WHERE event_id = $1`,
         [eventId]
       );
+
+      // Trust-weighted points (spec §14): a human verifier confirming the
+      // report is worth more than corroboration alone, and — like
+      // corroboration bonuses — has nothing to do with reported quantity.
+      const { rows: contribRows } = await query(
+        `SELECT c.contributor_id FROM environmental_events e
+         JOIN contributions c ON c.contribution_id = e.contribution_id
+         WHERE e.event_id = $1`,
+        [eventId]
+      );
+      const contributorId = contribRows[0]?.contributor_id;
+      if (contributorId) {
+        await awardVerificationPoints({ eventId, userId: contributorId }).catch((err) =>
+          console.error('[rewardLedgerService] verification points failed for event', eventId, ':', err.message)
+        );
+      }
     }
 
     const { rows: responded } = await query(
@@ -1378,11 +1605,13 @@ export async function verifyEvent(eventId, { verifierId, outcome, notes }) {
       [eventId]
     );
 
-    const { rows: impactRows } = await query(
-      `SELECT value FROM event_impact WHERE event_id = $1 AND metric = 'debris_removed_kg' ORDER BY created_at DESC LIMIT 1`,
+    // All outcome metrics recorded on this action event, generic across
+    // subject type (kg removed, lives rescued, condition change, ...) —
+    // not just the cleanup-specific 'debris_removed_kg'.
+    const { rows: impacts } = await query(
+      `SELECT metric, value, unit FROM event_impact WHERE event_id = $1 ORDER BY created_at DESC`,
       [eventId]
     );
-    const kgRemoved = impactRows[0]?.value ?? null;
 
     const closedEventIds = [];
     for (const row of responded) {
@@ -1407,7 +1636,7 @@ export async function verifyEvent(eventId, { verifierId, outcome, notes }) {
         // must never undo or block the state change that already committed.
         notifyEventClosure(row.to_event_id, {
           locationLabel: obsRows[0].location_label,
-          kgRemoved
+          impacts
         }).catch((err) =>
           console.error('[notificationService] closure notification failed for event', row.to_event_id, ':', err.message)
         );
@@ -1481,4 +1710,242 @@ export async function linkEvents(fromEventId, toEventId, relationshipType, actor
   );
 
   return inserted[0]?.relationship_id || null;
+}
+
+/**
+ * getContributorStories — spec §4's "What Changed Because of You", told as
+ * the full chain rather than a status badge: you reported it → others saw
+ * the same thing → the reports were merged → someone acted → this much
+ * changed → it was verified.
+ *
+ * Deliberately its own endpoint rather than more columns on listEvents:
+ * that query feeds the map with up to 200 events, and these joins (acting
+ * organization, verifier identity) are only worth paying for on the handful
+ * of stories actually rendered.
+ *
+ * Every beat is derived from recorded data. Beats with nothing behind them
+ * are omitted rather than guessed at — a story that invents who acted is
+ * worse than a shorter one.
+ */
+export async function getContributorStories(contributorId, limit = 3) {
+  const safeLimit = Math.min(Math.max(toNumber(limit) || 3, 1), 10);
+
+  const { rows: eventRows } = await query(
+    `SELECT e.event_id, e.title, e.location_label, e.created_at, e.updated_at,
+            e.verification_state, c.intake_method
+     FROM environmental_events e
+     JOIN contributions c ON c.contribution_id = e.contribution_id
+     WHERE c.contributor_id = $1 AND e.event_state = 'addressed'
+     ORDER BY e.updated_at DESC
+     LIMIT $2`,
+    [contributorId, safeLimit]
+  );
+  if (eventRows.length === 0) return [];
+
+  const eventIds = eventRows.map((r) => r.event_id);
+
+  const [subjects, corroboration, impact, actions, verifications, closures] = await Promise.all([
+    query(
+      `SELECT es.event_id, s.family, s.code, s.label
+       FROM event_subjects es
+       JOIN subjects s ON s.subject_id = es.subject_id
+       WHERE es.event_id = ANY($1::uuid[])
+       ORDER BY es.created_at ASC`,
+      [eventIds]
+    ),
+    query(
+      `SELECT e.event_id, COUNT(DISTINCT other_id)::int AS corroborators
+       FROM environmental_events e
+       LEFT JOIN LATERAL (
+         SELECT to_event_id AS other_id FROM event_relationships
+         WHERE from_event_id = e.event_id AND relationship_type = 'corroborates'
+         UNION
+         SELECT from_event_id FROM event_relationships
+         WHERE to_event_id = e.event_id AND relationship_type = 'corroborates'
+       ) AS c ON TRUE
+       WHERE e.event_id = ANY($1::uuid[])
+       GROUP BY e.event_id`,
+      [eventIds]
+    ),
+    query(
+      `SELECT event_id, metric, value::float8 AS value, unit
+       FROM event_impact
+       WHERE event_id = ANY($1::uuid[])
+       ORDER BY recorded_at DESC`,
+      [eventIds]
+    ),
+    // The action that answered the report: an event related by 'responds_to'
+    // pointing AT this one. Its actor comes from the relationship's
+    // created_by (action events carry no contribution of their own), so the
+    // organization is resolved through that user.
+    query(
+      `SELECT r.to_event_id AS event_id, a.title AS action_title, a.occurred_at AS acted_at,
+              NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), '') AS actor_name,
+              o.name AS actor_org
+       FROM event_relationships r
+       JOIN environmental_events a ON a.event_id = r.from_event_id
+       LEFT JOIN users u ON u.id = r.created_by
+       LEFT JOIN organizations o ON o.org_id = u.organization_id
+       WHERE r.to_event_id = ANY($1::uuid[]) AND r.relationship_type = 'responds_to'
+       ORDER BY a.occurred_at DESC`,
+      [eventIds]
+    ),
+    query(
+      `SELECT v.event_id, v.created_at,
+              NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), '') AS verifier_name,
+              o.name AS verifier_org
+       FROM verifications v
+       LEFT JOIN users u ON u.id = v.verifier_id
+       LEFT JOIN organizations o ON o.org_id = u.organization_id
+       WHERE v.event_id = ANY($1::uuid[]) AND v.outcome = 'verified'
+       ORDER BY v.created_at DESC`,
+      [eventIds]
+    ),
+    // When it actually closed, rather than whenever the row last changed.
+    query(
+      `SELECT DISTINCT ON (event_id) event_id, changed_at
+       FROM event_state_history
+       WHERE event_id = ANY($1::uuid[]) AND field = 'event_state' AND new_value = 'addressed'
+       ORDER BY event_id, changed_at DESC`,
+      [eventIds]
+    )
+  ]);
+
+  const firstBy = (rows, key) => {
+    const map = new Map();
+    for (const row of rows) if (!map.has(row[key])) map.set(row[key], row);
+    return map;
+  };
+  const groupBy = (rows, key) => {
+    const map = new Map();
+    for (const row of rows) {
+      if (!map.has(row[key])) map.set(row[key], []);
+      map.get(row[key]).push(row);
+    }
+    return map;
+  };
+
+  const subjectsByEvent = groupBy(subjects.rows, 'event_id');
+  const impactByEvent = groupBy(impact.rows, 'event_id');
+  const corroborationByEvent = firstBy(corroboration.rows, 'event_id');
+  const actionByEvent = firstBy(actions.rows, 'event_id');
+  const verificationByEvent = firstBy(verifications.rows, 'event_id');
+  const closureByEvent = firstBy(closures.rows, 'event_id');
+
+  return eventRows.map((e) => {
+    const action = actionByEvent.get(e.event_id) || null;
+    const verification = verificationByEvent.get(e.event_id) || null;
+    const corroborators = corroborationByEvent.get(e.event_id)?.corroborators || 0;
+    return {
+      eventId: e.event_id,
+      title: e.title,
+      locationLabel: e.location_label,
+      reportedAt: e.created_at,
+      closedAt: closureByEvent.get(e.event_id)?.changed_at || e.updated_at,
+      intakeMethod: e.intake_method,
+      verificationState: e.verification_state,
+      subjects: (subjectsByEvent.get(e.event_id) || [])
+        .map((s) => ({ family: s.family, code: s.code, label: s.label })),
+      corroboratorCount: corroborators,
+      // What the contributor sees as "N reports merged into one event" —
+      // their own plus everyone who corroborated it.
+      mergedReportCount: corroborators > 0 ? corroborators + 1 : 0,
+      action: action && {
+        title: action.action_title,
+        actedAt: action.acted_at,
+        actorName: action.actor_name,
+        actorOrg: action.actor_org
+      },
+      impact: (impactByEvent.get(e.event_id) || [])
+        .map((i) => ({ metric: i.metric, value: i.value, unit: i.unit })),
+      verification: verification && {
+        verifiedAt: verification.created_at,
+        verifierName: verification.verifier_name,
+        verifierOrg: verification.verifier_org
+      }
+    };
+  });
+}
+
+/**
+ * correctSubject — spec §7's "a species may initially be identified
+ * incorrectly, later an expert may correct it". Appends a new
+ * event_subjects row carrying the corrected identification and points it
+ * back at the row it supersedes; the original row is never updated or
+ * deleted, so both interpretations stay readable and the first one keeps
+ * whatever provenance it was submitted with. The correction itself is
+ * logged to event_state_history so who changed it, when, and why stay
+ * visible alongside the event's other state changes.
+ */
+export async function correctSubject(eventSubjectId, { verifierId, family, code, attributes, note }) {
+  if (!UUID_PATTERN.test(eventSubjectId || '')) {
+    throw new Error('Subject not found');
+  }
+
+  const { rows: existingRows } = await query(
+    `SELECT es.event_subject_id, es.event_id, s.family AS old_family, s.code AS old_code
+     FROM event_subjects es
+     JOIN subjects s ON s.subject_id = es.subject_id
+     WHERE es.event_subject_id = $1`,
+    [eventSubjectId]
+  );
+  const existing = existingRows[0];
+  if (!existing) {
+    throw new Error('Subject not found');
+  }
+
+  // A correction may only land on a family/code that actually exists in the
+  // taxonomy — same rule the AI classifier is held to, so a human correction
+  // can't introduce a subject the rest of the system can't interpret.
+  const { rows: taxonomyRows } = await query(
+    `SELECT subject_id FROM subjects WHERE family = $1 AND code = $2 AND is_active = true`,
+    [family, code]
+  );
+  const taxonomyRow = taxonomyRows[0];
+  if (!taxonomyRow) {
+    throw new Error(`Unknown subject: ${family}/${code}`);
+  }
+
+  // Already-superseded rows are the history, not the current reading — a
+  // correction has to be made against whatever supersedes them instead.
+  const { rows: supersededRows } = await query(
+    `SELECT 1 FROM event_subjects WHERE corrects_event_subject_id = $1 LIMIT 1`,
+    [eventSubjectId]
+  );
+  if (supersededRows.length > 0) {
+    throw new Error('This subject has already been corrected — correct the current identification instead');
+  }
+
+  const sanitizedAttributes = sanitizeSubjectAttributes(family, attributes);
+  const attributeProvenance = Object.fromEntries(
+    Object.keys(sanitizedAttributes).map((key) => [key, 'verifier_confirmed'])
+  );
+
+  const { rows: inserted } = await query(
+    `INSERT INTO event_subjects
+       (event_id, subject_id, attributes, attribute_provenance, source, confidence, corrects_event_subject_id)
+     VALUES ($1, $2, $3, $4, 'verifier_confirmed', NULL, $5)
+     RETURNING event_subject_id`,
+    [
+      existing.event_id,
+      taxonomyRow.subject_id,
+      JSON.stringify(sanitizedAttributes),
+      JSON.stringify(attributeProvenance),
+      eventSubjectId
+    ]
+  );
+
+  await query(
+    `INSERT INTO event_state_history (event_id, field, old_value, new_value, changed_by, note)
+     VALUES ($1, 'subject_identification', $2, $3, $4, $5)`,
+    [
+      existing.event_id,
+      `${existing.old_family}/${existing.old_code}`,
+      `${family}/${code}`,
+      verifierId,
+      note || null
+    ]
+  );
+
+  return { eventSubjectId: inserted[0].event_subject_id, eventId: existing.event_id };
 }

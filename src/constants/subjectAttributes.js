@@ -16,6 +16,17 @@ export const LIFE_CONDITION_VALUES = [
   'unusual_behavior', 'invasive', 'bloom_outbreak', 'nesting_breeding'
 ];
 
+// Distinct from `condition` above: condition is the state an individual
+// was found in (e.g. "entangled"); outcome is what happened to it as a
+// result of the human action taken (e.g. "released" vs "deceased"). The
+// client's own worked example — "two turtles trapped, one died" — needs
+// both axes recorded per individual, not collapsed into one field; a
+// report with two `life` subjects can carry two different outcomes for
+// the same condition.
+export const LIFE_OUTCOME_VALUES = [
+  'survived', 'rescued', 'released', 'deceased', 'ongoing', 'unknown'
+];
+
 // spec §7.4: "Potential condition: healthy · improving · stable · stressed
 // · damaged · degraded · restored · unknown"
 export const HABITAT_CONDITION_VALUES = [
@@ -48,6 +59,9 @@ export function sanitizeSubjectAttributes(family, rawAttributes) {
 
   if (family === 'life' && LIFE_CONDITION_VALUES.includes(rawAttributes.condition)) {
     out.condition = rawAttributes.condition;
+  }
+  if (family === 'life' && LIFE_OUTCOME_VALUES.includes(rawAttributes.outcome)) {
+    out.outcome = rawAttributes.outcome;
   }
   if (family === 'habitat' && HABITAT_CONDITION_VALUES.includes(rawAttributes.condition)) {
     out.condition = rawAttributes.condition;

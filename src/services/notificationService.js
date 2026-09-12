@@ -113,14 +113,35 @@ export async function markNotificationReadById(id, recipientRole, recipientId = 
  * (recipientId set), not broadcast to a role, since this is specific to
  * what that person reported.
  */
-export async function notifyClosure({ contributorId, contributorRole, subjectLabel, locationLabel, kgRemoved, eventId }) {
+// Metric-specific phrasing where the plain "<value> <unit> <metric>" default
+// would read awkwardly; anything not listed here still gets a legible
+// generic phrase rather than needing a new entry for every possible metric.
+const IMPACT_PHRASES = {
+  debris_removed_kg: (value, unit) => `${value}${unit ? ` ${unit}` : ''} removed`
+};
+
+function formatImpacts(impacts) {
+  if (!Array.isArray(impacts) || impacts.length === 0) return '';
+  return impacts
+    .map(({ metric, value, unit }) => {
+      const phrase = IMPACT_PHRASES[metric];
+      if (phrase) return phrase(value, unit);
+      return `${value}${unit ? ` ${unit}` : ''} ${metric.replace(/_/g, ' ')}`;
+    })
+    .join(' · ');
+}
+
+export async function notifyClosure({ contributorId, contributorRole, subjectLabel, locationLabel, impacts, eventId }) {
   if (!contributorId || !contributorRole) return null;
 
   const title = 'Something you reported changed';
   const what = subjectLabel || 'The issue';
   const where = locationLabel ? ` near ${locationLabel}` : '';
-  const impact = kgRemoved ? ` ${kgRemoved} kg removed ·` : '';
-  const message = `${what} reported${where} has been removed.${impact} Verified`;
+  const impactPhrase = formatImpacts(impacts);
+  // 'addressed' rather than 'removed' — closure doesn't always mean debris
+  // was hauled away; it can mean a rescue, a restoration, or a resolved
+  // measurement anomaly (spec §7/§11).
+  const message = `${what} reported${where} has been addressed.${impactPhrase ? ` ${impactPhrase} ·` : ''} Verified`;
 
   return createNotification({
     recipientRole: contributorRole,
@@ -132,7 +153,7 @@ export async function notifyClosure({ contributorId, contributorRole, subjectLab
 }
 
 export async function send(activity) {
-  const activityLocation = activity.location || 'a cleanup location';
+  const activityLocation = activity.location || 'an unspecified location';
   let contributorLabel = 'by a contributor';
 
   if (activity.contributorId) {
@@ -146,8 +167,11 @@ export async function send(activity) {
     }
   }
 
-  const title = 'New activity submitted';
-  const message = `A new cleanup activity was submitted ${contributorLabel} At: ${activityLocation}.`;
+  const title = 'New contribution submitted';
+  // 'contribution', not 'cleanup activity' — this fires for every intake
+  // method (wildlife sighting, water-quality reading, tell-blue-mind text),
+  // not just cleanup reports.
+  const message = `A new contribution was submitted ${contributorLabel}, at: ${activityLocation}.`;
 
   return createNotification({
     recipientRole: 'admin',

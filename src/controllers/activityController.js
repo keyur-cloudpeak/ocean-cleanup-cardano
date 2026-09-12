@@ -114,12 +114,16 @@ async function create(req, res) {
       mediaType
     } = req.body;
 
-    // `!quantity` would wrongly reject 0 — a legitimate value for, e.g.,
-    // a water-quality measurement with no debris weight to report, not a
-    // missing one.
-    if (!category || !location || quantity === undefined || quantity === null || quantity === '') {
+    // Only `location` is universally required. `category` and `quantity`
+    // are pollution_waste-shaped fields — a wildlife sighting, a
+    // water-quality measurement, or a "Tell Blue Mind" text report has
+    // neither, and createEventForActivity resolves the real subject(s)
+    // from aiSubjects instead. Forcing them here was the exact
+    // cleanup-only gate the universal-contributor pivot removes.
+    if (!location) {
       return res.status(400).json({ ok: false, error: 'Missing required fields' });
     }
+    const normalizedQuantity = quantity === undefined || quantity === null || quantity === '' ? 0 : quantity;
 
     // spec §19 — derive the org from who's signed in when the request
     // doesn't name one, and refuse a named one the contributor isn't
@@ -159,9 +163,9 @@ async function create(req, res) {
     }
 
     const activity = await createActivity({
-      category,
+      category: category || null,
       location,
-      quantity,
+      quantity: normalizedQuantity,
       evidenceHash,
       contributorId: req.user.id,
       organizationId: orgContext.organizationId,
