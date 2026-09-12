@@ -692,12 +692,22 @@ export async function listEvents({ eventState, verificationState, subjectFamily,
   const result = await query(
     `SELECT e.event_id, e.legacy_activity_id, e.title, e.description, e.event_state, e.verification_state,
             e.occurred_at, e.lat, e.lon, e.location_label, e.created_at, e.updated_at, c.organization_id,
-            COALESCE(
-              json_agg(DISTINCT jsonb_build_object(
-                'subjectId', s.subject_id, 'family', s.family, 'code', s.code, 'label', s.label
-              )) FILTER (WHERE s.subject_id IS NOT NULL),
-              '[]'
-            ) AS subjects,
+            -- Ordered by what the event is about, not by jsonb value.
+            -- json_agg(DISTINCT ...) sorts by the serialized object, so
+            -- "subjects[0]" was effectively arbitrary and could surface the
+            -- human_action ("Cleanup / removal") as the event's own name.
+            (SELECT COALESCE(json_agg(sub ORDER BY sub->>'rank', sub->>'label'), '[]'::json)
+             FROM (
+               SELECT DISTINCT jsonb_build_object(
+                 'subjectId', s2.subject_id, 'family', s2.family, 'code', s2.code, 'label', s2.label,
+                 'rank', CASE s2.family
+                   WHEN 'pollution_waste' THEN '0' WHEN 'life' THEN '1' WHEN 'habitat' THEN '2'
+                   WHEN 'water' THEN '3' WHEN 'conditions' THEN '4' ELSE '5' END
+               ) AS sub
+               FROM event_subjects es2
+               JOIN subjects s2 ON s2.subject_id = es2.subject_id
+               WHERE es2.event_id = e.event_id
+             ) ordered_subjects) AS subjects,
             (SELECT COUNT(*) FROM evidence ev WHERE ev.event_id = e.event_id) AS evidence_count,
             (SELECT COUNT(DISTINCT other_id) FROM (
                SELECT to_event_id AS other_id FROM event_relationships
@@ -1461,12 +1471,24 @@ async function getContributorsToNotify(eventId) {
   return rows.map((r) => r.contributor_id);
 }
 
+// What the event is *about*, for the one-line notification subject.
+// human_action is ranked last deliberately: a cleanup is what people did
+// about the event, not what the event is, and ordering by confidence alone
+// let it win (a contributor-confirmed action carries confidence 1.0), which
+// produced "Cleanup / removal reported near X has been addressed" instead
+// of naming the ghost net.
 async function getPrimarySubjectLabel(eventId) {
   const { rows } = await query(
     `SELECT s.label FROM event_subjects es
      JOIN subjects s ON s.subject_id = es.subject_id
      WHERE es.event_id = $1
-     ORDER BY es.confidence DESC NULLS LAST, es.created_at ASC
+     ORDER BY
+       CASE s.family
+         WHEN 'pollution_waste' THEN 0 WHEN 'life' THEN 1 WHEN 'habitat' THEN 2
+         WHEN 'water' THEN 3 WHEN 'conditions' THEN 4 ELSE 5
+       END,
+       es.confidence DESC NULLS LAST,
+       es.created_at ASC
      LIMIT 1`,
     [eventId]
   );
