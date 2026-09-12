@@ -1,5 +1,6 @@
 import { getContributorStats, getContributorInsights, getContributorExportSummary, getContributorExportActivities } from '../services/activityService.js';
 import { getContributorImpactSummary, getContributorStories } from '../services/environmentalEventService.js';
+import { getContributorKpis } from '../services/kpiProfileService.js';
 import { findUserById } from '../services/userService.js';
 import { streamContributorReportPdf } from '../services/reportPdfService.js';
 import asyncHandler from '../middleware/asyncHandler.js';
@@ -46,6 +47,17 @@ async function getInsights(req, res) {
 async function getImpact(req, res) {
   const impact = await getContributorImpactSummary(req.user.id);
   res.json({ ok: true, impact });
+}
+
+/**
+ * GET /api/contributor/kpis?force=1
+ * The KPI row for this contributor (spec §8). Which metrics appear is an
+ * AI decision made once and stored; the values are recomputed here on every
+ * request. `force` re-runs the decision.
+ */
+async function getKpis(req, res) {
+  const result = await getContributorKpis(req.user.id, { force: req.query.force === '1' });
+  res.json({ ok: true, ...result });
 }
 
 /**
@@ -103,5 +115,6 @@ export default {
   getInsights: asyncHandler(getInsights),
   getImpact: asyncHandler(getImpact),
   getStories: asyncHandler(getStories),
+  getKpis: asyncHandler(getKpis),
   exportReport: asyncHandler(exportReport)
 };

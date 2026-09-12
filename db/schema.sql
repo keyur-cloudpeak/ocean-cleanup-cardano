@@ -825,6 +825,23 @@ ON CONFLICT (user_id, organization_id) DO NOTHING;
 -- inference happens at draft time, before a contributor confirms
 -- anything, so most rows will have event_id null forever (rejected
 -- drafts, or drafts a contributor abandoned).
+-- Which KPIs a given contributor's dashboard leads with (spec §8).
+-- The CHOICE is made once by the AI from a fixed catalogue and stored here;
+-- the VALUES are never stored, they're recomputed from the event model on
+-- every read. `profile_signature` captures the shape of what this person
+-- contributes, so the choice is only revisited when that shape actually
+-- changes — a new subject family, a new intake method — rather than on
+-- every dashboard load.
+CREATE TABLE IF NOT EXISTS contributor_kpi_profiles (
+    contributor_id     TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    kpi_keys           TEXT[] NOT NULL,
+    rationale          TEXT,
+    profile_signature  TEXT NOT NULL,
+    decided_by         TEXT NOT NULL DEFAULT 'ai' CHECK (decided_by IN ('ai', 'fallback', 'manual')),
+    decided_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS ai_inferences (
     inference_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id        UUID REFERENCES environmental_events(event_id) ON DELETE SET NULL,
