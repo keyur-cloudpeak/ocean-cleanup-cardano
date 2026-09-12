@@ -628,6 +628,7 @@ function mapEventSummaryRow(row) {
     // client mapping over this shouldn't have to care how pg decoded it.
     connectionTypes: Array.isArray(row.connection_types) ? row.connection_types : [],
     impact: Array.isArray(row.impact) ? row.impact : [],
+    evidenceUrls: Array.isArray(row.evidence_urls) ? row.evidence_urls.filter(Boolean) : [],
     sanityFlags
   };
 }
@@ -732,7 +733,16 @@ export async function listEvents({ eventState, verificationState, subjectFamily,
             (SELECT COALESCE(json_agg(json_build_object(
                'metric', ei.metric, 'value', ei.value::float8, 'unit', ei.unit
              ) ORDER BY ei.recorded_at DESC), '[]'::json)
-             FROM event_impact ei WHERE ei.event_id = e.event_id) AS impact
+             FROM event_impact ei WHERE ei.event_id = e.event_id) AS impact,
+            -- Evidence thumbnails, so one card design can serve both
+            -- legacy-backed events (which have photos) and event-model-only
+            -- ones (which may not) without the page falling back to the old
+            -- activities table to find an image.
+            (SELECT COALESCE(json_agg(ev.gateway_url ORDER BY ev.created_at ASC), '[]'::json)
+             FROM evidence ev
+             WHERE ev.event_id = e.event_id
+               AND ev.gateway_url IS NOT NULL
+               AND ev.evidence_type IN ('photo', 'video')) AS evidence_urls
      FROM environmental_events e
      LEFT JOIN contributions c ON c.contribution_id = e.contribution_id
      LEFT JOIN event_subjects es ON es.event_id = e.event_id
