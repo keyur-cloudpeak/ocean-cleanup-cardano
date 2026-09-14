@@ -1064,29 +1064,44 @@ export async function getContributorImpactSummary(contributorId) {
        JOIN contributions c ON c.contribution_id = e.contribution_id
        WHERE c.contributor_id = $1 AND h.field = 'event_state' AND h.new_value = 'addressed'
      ),
-     kg_from_impact AS (
+     -- One kg figure per event, resolved from the two places the model
+     -- records a weight. They are NOT additive: where an event has both,
+     -- they hold the same weight (event_impact is written when the action
+     -- is completed, event_subjects.quantity_kg at intake), so adding them
+     -- reported twice the waste actually logged. Take the larger, which
+     -- still covers an event carrying only one of them, and date it by
+     -- whichever source won so the 30-day windows below stay honest.
+     per_event_kg AS (
        SELECT
-         COALESCE(SUM(ei.value) FILTER (WHERE ei.recorded_at >= (SELECT cur_start FROM bounds)), 0) AS cur,
-         COALESCE(SUM(ei.value) FILTER (WHERE ei.recorded_at >= (SELECT prev_start FROM bounds) AND ei.recorded_at < (SELECT cur_start FROM bounds)), 0) AS prev
-       FROM event_impact ei
-       JOIN environmental_events e ON e.event_id = ei.event_id
+         e.event_id,
+         COALESCE((SELECT SUM(ei.value) FROM event_impact ei
+                   WHERE ei.event_id = e.event_id AND ei.metric = 'debris_removed_kg'), 0) AS impact_kg,
+         (SELECT MAX(ei.recorded_at) FROM event_impact ei
+           WHERE ei.event_id = e.event_id AND ei.metric = 'debris_removed_kg') AS impact_at,
+         -- First quantity_kg row only: intake stamps the same weight onto
+         -- every subject of an event, so a SUM would multiply it.
+         COALESCE((SELECT (es.attributes->>'quantity_kg')::numeric FROM event_subjects es
+                   WHERE es.event_id = e.event_id AND es.attributes ? 'quantity_kg'
+                   ORDER BY es.created_at ASC LIMIT 1), 0) AS subject_kg,
+         (SELECT MIN(es.created_at) FROM event_subjects es
+           WHERE es.event_id = e.event_id AND es.attributes ? 'quantity_kg') AS subject_at
+       FROM environmental_events e
        JOIN contributions c ON c.contribution_id = e.contribution_id
-       WHERE c.contributor_id = $1 AND ei.metric = 'debris_removed_kg'
+       WHERE c.contributor_id = $1
      ),
-     kg_from_subjects AS (
-       -- Same one-per-event dedupe as the totals query below, just
-       -- windowed on when that subject row was created.
+     kg_resolved AS (
        SELECT
-         COALESCE(SUM(per_event.qty) FILTER (WHERE per_event.created_at >= (SELECT cur_start FROM bounds)), 0) AS cur,
-         COALESCE(SUM(per_event.qty) FILTER (WHERE per_event.created_at >= (SELECT prev_start FROM bounds) AND per_event.created_at < (SELECT cur_start FROM bounds)), 0) AS prev
-       FROM (
-         SELECT DISTINCT ON (es.event_id) (es.attributes->>'quantity_kg')::numeric AS qty, es.created_at
-         FROM event_subjects es
-         JOIN environmental_events e ON e.event_id = es.event_id
-         JOIN contributions c ON c.contribution_id = e.contribution_id
-         WHERE c.contributor_id = $1 AND es.attributes ? 'quantity_kg'
-         ORDER BY es.event_id, es.created_at ASC
-       ) per_event
+         GREATEST(impact_kg, subject_kg) AS kg,
+         CASE WHEN impact_kg >= subject_kg
+              THEN COALESCE(impact_at, subject_at)
+              ELSE COALESCE(subject_at, impact_at) END AS recorded_at
+       FROM per_event_kg
+     ),
+     kg_window AS (
+       SELECT
+         COALESCE(SUM(kg) FILTER (WHERE recorded_at >= (SELECT cur_start FROM bounds)), 0) AS cur,
+         COALESCE(SUM(kg) FILTER (WHERE recorded_at >= (SELECT prev_start FROM bounds) AND recorded_at < (SELECT cur_start FROM bounds)), 0) AS prev
+       FROM kg_resolved
      ),
      location_counts AS (
        SELECT
@@ -1104,31 +1119,9 @@ export async function getContributorImpactSummary(contributorId) {
        (SELECT COUNT(*) FROM environmental_events e
           JOIN contributions c ON c.contribution_id = e.contribution_id
           WHERE c.contributor_id = $1 AND e.event_state = 'addressed') AS actions_completed,
-       (
-         -- Two sources of "kg removed": event_impact (populated when an
-         -- action is formally completed via completeAction) and
-         -- event_subjects.attributes.quantity_kg (populated at intake
-         -- time for pollution_waste subjects — the AI/photo/measurement
-         -- path, which never goes through event_impact at all). Sum both
-         -- rather than just one, or most real submissions undercount.
-         (SELECT COALESCE(SUM(ei.value), 0) FROM event_impact ei
-            JOIN environmental_events e ON e.event_id = ei.event_id
-            JOIN contributions c ON c.contribution_id = e.contribution_id
-            WHERE c.contributor_id = $1 AND ei.metric = 'debris_removed_kg')
-         +
-         (SELECT COALESCE(SUM(per_event.qty), 0) FROM (
-            -- One quantity_kg per event, not per subject row — the same
-            -- value gets stamped onto every subject of a multi-subject
-            -- event at intake time, so summing across event_subjects
-            -- directly would multiply it by the subject count.
-            SELECT DISTINCT ON (es.event_id) (es.attributes->>'quantity_kg')::numeric AS qty
-            FROM event_subjects es
-            JOIN environmental_events e ON e.event_id = es.event_id
-            JOIN contributions c ON c.contribution_id = e.contribution_id
-            WHERE c.contributor_id = $1 AND es.attributes ? 'quantity_kg'
-            ORDER BY es.event_id, es.created_at ASC
-          ) per_event)
-       ) AS kg_removed,
+       -- Per-event resolved weights (see per_event_kg above), never the
+       -- two sources added together.
+       (SELECT COALESCE(SUM(kg), 0) FROM kg_resolved) AS kg_removed,
        (SELECT COUNT(DISTINCT COALESCE(NULLIF(TRIM(e.location_label), ''), e.event_id::text))
           FROM environmental_events e
           JOIN contributions c ON c.contribution_id = e.contribution_id
@@ -1136,10 +1129,10 @@ export async function getContributorImpactSummary(contributorId) {
        cc.cur AS contributions_cur, cc.prev AS contributions_prev,
        vc.cur AS verified_cur, vc.prev AS verified_prev,
        ac.cur AS actions_cur, ac.prev AS actions_prev,
-       (ki.cur + ks.cur) AS kg_cur, (ki.prev + ks.prev) AS kg_prev,
+       kw.cur AS kg_cur, kw.prev AS kg_prev,
        lc.cur AS locations_cur, lc.prev AS locations_prev
      FROM contribution_counts cc, verified_counts vc, action_counts ac,
-          kg_from_impact ki, kg_from_subjects ks, location_counts lc`,
+          kg_window kw, location_counts lc`,
     [contributorId]
   );
 

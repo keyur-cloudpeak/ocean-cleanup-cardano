@@ -16,4 +16,7 @@ router.get('/feed', citizenController.getFeed);
 // GET /api/citizen/activities — requires citizen or admin auth
 router.get('/activities', authenticate, authorizeRoles('citizen'), requireAuthenticatedUser, citizenController.getActivities);
 
+// GET /api/citizen/stories — full outcome chains for "What Changed Because of You"
+router.get('/stories', authenticate, authorizeRoles('citizen', 'admin'), requireAuthenticatedUser, citizenController.getStories);
+
 export default router;

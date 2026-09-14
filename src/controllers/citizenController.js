@@ -1,4 +1,5 @@
 import { getCitizenStats, getCitizenLeaderboard, getCitizenFeed, getCitizenActivities } from '../services/citizenService.js';
+import { getContributorStories } from '../services/environmentalEventService.js';
 import asyncHandler from '../middleware/asyncHandler.js';
 
 /**
@@ -24,7 +25,11 @@ async function getLeaderboard(req, res) {
  * Returns recent community activity feed (public — no auth needed, auth adds "isMe" flag).
  */
 async function getFeed(req, res) {
-  const limit = Math.min(Number(req.query.limit) || 15, 50);
+  // Clamped to a whole number in [1, 50]. Without the floor and the
+  // truncation this reached Postgres as `LIMIT -5` / `LIMIT 1.5` and came
+  // back as a 500 carrying the raw driver error — on an endpoint that
+  // takes no auth, so any caller could trigger it.
+  const limit = Math.min(Math.max(Math.trunc(Number(req.query.limit)) || 15, 1), 50);
   const feed = await getCitizenFeed(limit);
   res.json({ ok: true, feed });
 }
@@ -38,9 +43,26 @@ async function getActivities(req, res) {
   res.json({ ok: true, activities });
 }
 
+/**
+ * GET /api/citizen/stories
+ * Returns the authenticated citizen's outcome chains for "What Changed
+ * Because of You" (spec §4) — the same shape the Contributor Space gets,
+ * so both spaces tell the story the same way.
+ *
+ * Shares the contributor service rather than a citizen-specific copy: it
+ * scopes purely by the contribution's own contributor_id, which is the
+ * submitting user whatever their role, so there is nothing role-specific
+ * in it to duplicate.
+ */
+async function getStories(req, res) {
+  const stories = await getContributorStories(req.user.id, req.query.limit);
+  res.json({ ok: true, stories });
+}
+
 export default {
   getStats: asyncHandler(getStats),
   getLeaderboard: asyncHandler(getLeaderboard),
   getFeed: asyncHandler(getFeed),
-  getActivities: asyncHandler(getActivities)
+  getActivities: asyncHandler(getActivities),
+  getStories: asyncHandler(getStories)
 };
