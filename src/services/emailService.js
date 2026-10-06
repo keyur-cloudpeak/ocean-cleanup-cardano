@@ -67,10 +67,10 @@ function buildVerificationEmail({ firstName, verificationUrl }) {
           <div style="text-align:center; margin:30px 0;">
             <table role="presentation" align="center" style="margin:0 auto;">
               <tr>
-                <td style="background:linear-gradient(90deg, #2dd4bf, #5eead4); border-radius:10px;">
+                <td bgcolor="#2dd4bf" style="background-color:#2dd4bf; background-image:linear-gradient(90deg, #2dd4bf, #5eead4); border-radius:10px;">
                   <a
                     href="${verificationUrl}"
-                    style="display:inline-block; color:#062a29; text-decoration:none; font-size:15px; font-weight:700; letter-spacing:0.3px; padding:14px 34px;"
+                    style="display:inline-block; color:#062a29 !important; text-decoration:none; font-size:15px; font-weight:700; letter-spacing:0.3px; padding:14px 34px;"
                   >
                     Verify Account &nbsp;&#8594;
                   </a>
@@ -158,10 +158,10 @@ function buildPasswordResetEmail({ firstName, resetUrl }) {
           <div style="text-align:center; margin:30px 0;">
             <table role="presentation" align="center" style="margin:0 auto;">
               <tr>
-                <td style="background:linear-gradient(90deg, #2dd4bf, #5eead4); border-radius:10px;">
+                <td bgcolor="#2dd4bf" style="background-color:#2dd4bf; background-image:linear-gradient(90deg, #2dd4bf, #5eead4); border-radius:10px;">
                   <a
                     href="${resetUrl}"
-                    style="display:inline-block; color:#062a29; text-decoration:none; font-size:15px; font-weight:700; letter-spacing:0.3px; padding:14px 34px;"
+                    style="display:inline-block; color:#062a29 !important; text-decoration:none; font-size:15px; font-weight:700; letter-spacing:0.3px; padding:14px 34px;"
                   >
                     Reset Password &nbsp;&#8594;
                   </a>
@@ -249,10 +249,10 @@ function buildAdminInviteEmail({ firstName, inviteUrl }) {
           <div style="text-align:center; margin:30px 0;">
             <table role="presentation" align="center" style="margin:0 auto;">
               <tr>
-                <td style="background:linear-gradient(90deg, #2dd4bf, #5eead4); border-radius:10px;">
+                <td bgcolor="#2dd4bf" style="background-color:#2dd4bf; background-image:linear-gradient(90deg, #2dd4bf, #5eead4); border-radius:10px;">
                   <a
                     href="${inviteUrl}"
-                    style="display:inline-block; color:#062a29; text-decoration:none; font-size:15px; font-weight:700; letter-spacing:0.3px; padding:14px 34px;"
+                    style="display:inline-block; color:#062a29 !important; text-decoration:none; font-size:15px; font-weight:700; letter-spacing:0.3px; padding:14px 34px;"
                   >
                     Login &nbsp;&#8594;
                   </a>
@@ -271,6 +271,97 @@ function buildAdminInviteEmail({ firstName, inviteUrl }) {
   `;
 
   return { subject: 'You are invited as an admin on BlueMind', text, html };
+}
+
+function buildContributorInviteEmail({ firstName, inviteUrl }) {
+  const greeting = firstName ? `Hi ${firstName},` : 'Hi there,';
+  const text = [
+    greeting,
+    '',
+    'You have been invited as a contributor on BlueMind.',
+    'Click the link below to set up your password and start logging activities:',
+    inviteUrl,
+    '',
+    'This invite link expires in 7 days and can only be used once.',
+    'If you were not expecting this invite, you can ignore this message.'
+  ].join('\n');
+
+  const html = `
+    <div style="
+      margin:0;
+      padding:0;
+      background-color:#0a1e33;
+      font-family:Arial,Helvetica,sans-serif;
+    ">
+      <div style="max-width:600px; margin:0 auto; padding:60px 20px;">
+        <div style="
+          background:rgba(15,42,64,0.55);
+          border:1px solid rgba(148,197,214,0.18);
+          border-radius:20px;
+          padding:45px 40px;
+          box-shadow:0 8px 30px rgba(0,0,0,0.35);
+        ">
+          <div style="text-align:center; margin-bottom:30px;">
+            <table role="presentation" align="center" style="margin:0 auto;">
+              <tr>
+                <td style="vertical-align:middle; padding-right:8px;">
+                  <span style="
+                    display:inline-block;
+                    width:26px;
+                    height:26px;
+                    border:1.5px solid #7dd3c0;
+                    border-radius:50%;
+                    color:#7dd3c0;
+                    font-size:14px;
+                    line-height:23px;
+                    text-align:center;
+                  ">🌐</span>
+                </td>
+                <td style="vertical-align:middle;">
+                  <span style="color:#f1f5f9; font-size:20px; font-weight:700; letter-spacing:0.3px;">
+                    BlueMind
+                  </span>
+                </td>
+              </tr>
+            </table>
+            <p style="margin:8px 0 0; color:#94a3b8; font-size:14px;">
+              You have been invited as a contributor.
+            </p>
+          </div>
+          <h2 style="margin:0 0 16px; font-size:22px; color:#f8fafc; font-weight:600;">
+            ${greeting}
+          </h2>
+          <p style="font-size:16px; line-height:1.6; margin:0 0 16px; color:#cbd5e1;">
+            You've been invited to join <strong style="color:#f1f5f9;">BlueMind</strong> as a contributor.
+          </p>
+          <p style="font-size:16px; line-height:1.6; margin:0 0 24px; color:#cbd5e1;">
+            Click the button below to set up your password and get started.
+          </p>
+          <div style="text-align:center; margin:30px 0;">
+            <table role="presentation" align="center" style="margin:0 auto;">
+              <tr>
+                <td bgcolor="#2dd4bf" style="background-color:#2dd4bf; background-image:linear-gradient(90deg, #2dd4bf, #5eead4); border-radius:10px;">
+                  <a
+                    href="${inviteUrl}"
+                    style="display:inline-block; color:#062a29 !important; text-decoration:none; font-size:15px; font-weight:700; letter-spacing:0.3px; padding:14px 34px;"
+                  >
+                    Set your password &nbsp;&#8594;
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </div>
+          <div style="border-top:1px solid rgba(148,163,184,0.2); padding-top:20px;">
+            <p style="font-size:13px; line-height:1.6; color:#94a3b8; margin:0;">
+              This invite link expires in 7 days and can only be used once. If you were not expecting this invite, you can safely ignore this email.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  return { subject: 'You are invited as a contributor on BlueMind', text, html };
 }
 
 async function sendViaGmail({ to, subject, text, html }) {
@@ -359,8 +450,30 @@ export async function sendAdminInviteEmail({ to, firstName, inviteUrl }) {
   return { delivered: false, mode: 'console', inviteUrl };
 }
 
+export async function sendContributorInviteEmail({ to, firstName, inviteUrl }) {
+  const message = buildContributorInviteEmail({ firstName, inviteUrl });
+
+  if (env.emailProvider === 'gmail') {
+    return sendViaGmail({
+      to,
+      subject: message.subject,
+      text: message.text,
+      html: message.html
+    });
+  }
+
+  console.info('[emailService] Contributor invite email (console mode) :- ', {
+    to,
+    subject: message.subject,
+    inviteUrl
+  });
+
+  return { delivered: false, mode: 'console', inviteUrl };
+}
+
 export default {
   sendVerificationEmail,
   sendPasswordResetEmail,
-  sendAdminInviteEmail
+  sendAdminInviteEmail,
+  sendContributorInviteEmail
 };

@@ -23,6 +23,7 @@ function mapUserRow(row) {
     role: row.role,
     active: row.is_active,
     emailVerifiedAt: row.email_verified_at || null,
+    hasVerificationToken: Boolean(row.email_verification_token_hash),
     organizationId: row.organization_id || null,
     jobTitle: row.job_title || null,
     yearsExperience: row.years_experience || null,
@@ -60,7 +61,7 @@ export async function findUserByUsername(username) {
 export async function findUserByEmail(email) {
   const normalizedEmail = normalizeEmail(email);
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, email_verification_token_hash, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
      WHERE LOWER(email) = $1
      LIMIT 1`,
@@ -259,4 +260,28 @@ export async function deleteUserById(id) {
   );
 
   return result.rowCount;
+}
+
+// Picks a free username for an invited user (invites have no signup form, so
+// derive one from the email's local part and add digits on collision).
+export async function generateUniqueUsername(email) {
+  const base = normalizeUsername(String(email || '').split('@')[0]).replace(/[^a-z0-9._-]/g, '') || 'contributor';
+  let candidate = base;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (!(await findUserByUsername(candidate))) return candidate;
+    candidate = `${base}${Math.floor(1000 + Math.random() * 9000)}`;
+  }
+  return `${base}${Date.now()}`;
+}
+
+export async function updateUserRole(id, role) {
+  const result = await query(
+    `UPDATE users
+     SET role = $2
+     WHERE id = $1
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at`,
+    [id, role]
+  );
+
+  return mapUserRow(result.rows[0]);
 }

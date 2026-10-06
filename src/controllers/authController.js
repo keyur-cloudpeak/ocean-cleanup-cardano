@@ -685,6 +685,11 @@ async function completePasswordReset(req, res) {
     const hashedPassword = await bcrypt.hash(password, 10);
     await updateUserPassword(user.id, hashedPassword);
     await clearUserPasswordResetToken(user.id);
+    // Following the emailed link proves ownership of the address, which also
+    // activates contributors who were invited by an admin.
+    if (!user.emailVerifiedAt) {
+      await markUserEmailVerified(user.id);
+    }
 
     return res.status(200).send(renderPasswordResetSuccessPage());
   } catch (error) {
