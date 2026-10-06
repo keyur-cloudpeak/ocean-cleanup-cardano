@@ -707,6 +707,37 @@ async function requestPasswordReset(req, res) {
     }
 
     const user = await findUserByEmail(email);
+
+    // Each client says which portal the request comes from. The admin panel
+    // sends 'admin'; the citizen/contributor app sends 'citizen'.
+    const portal = String(req.body.portal || '').trim().toLowerCase();
+    const role = String(user?.role || '').trim().toLowerCase();
+
+    if (portal === 'admin' && ['citizen', 'contributor'].includes(role)) {
+      return res.status(403).json({
+        ok: false,
+        message: 'Citizen and Contributor accounts do not have access to the admin panel.'
+      });
+    }
+
+    if (portal === 'citizen') {
+      if (!user) {
+        const admin = await findAdminByEmail(email);
+        return res.status(admin ? 403 : 404).json({
+          ok: false,
+          message: admin
+            ? 'Admin accounts cannot reset their password here. Please use the admin panel.'
+            : 'Account not available.'
+        });
+      }
+      if (!['citizen', 'contributor'].includes(role)) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Admin accounts cannot reset their password here. Please use the admin panel.'
+        });
+      }
+    }
+
     if (user) {
       const resetToken = crypto.randomBytes(32).toString('hex');
       const resetTokenExpiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MS).toISOString();
