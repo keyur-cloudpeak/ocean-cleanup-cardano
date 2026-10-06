@@ -1,19 +1,48 @@
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
+import { findUserById } from '../services/userService.js';
+import { findAdminById } from '../services/adminService.js';
 
-export function authenticate(req, res, next) {
+// The JWT only proves who signed in; role and active state are read from the
+// database on every request so a deactivated account or a changed role takes
+// effect immediately instead of when the 24h token expires. Admins normally
+// live in `admins`, but legacy admin accounts are still rows in `users`.
+async function resolveAccount(decoded) {
+  if (decoded.role === 'admin') {
+    const admin = await findAdminById(decoded.id);
+    if (admin) return { role: 'admin', active: admin.active };
+  }
+
+  const user = await findUserById(decoded.id);
+  return user ? { role: user.role, active: user.active } : null;
+}
+
+export async function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ ok: false, message: 'Unauthorized' });
   }
 
-  const token = authHeader.split(' ')[1];
+  let decoded;
   try {
-    const decoded = jwt.verify(token, env.jwtSecret);
-    req.user = decoded;
-    next();
+    decoded = jwt.verify(authHeader.split(' ')[1], env.jwtSecret);
   } catch (error) {
     return res.status(401).json({ ok: false, message: 'Invalid token' });
+  }
+
+  try {
+    const account = await resolveAccount(decoded);
+    if (!account) {
+      return res.status(401).json({ ok: false, message: 'User not found' });
+    }
+    if (account.active === false) {
+      return res.status(403).json({ ok: false, message: 'Account is inactive' });
+    }
+
+    req.user = { ...decoded, role: account.role };
+    next();
+  } catch (error) {
+    next(error);
   }
 }
 

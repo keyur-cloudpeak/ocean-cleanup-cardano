@@ -16,6 +16,7 @@ router.post('/set-password', authController.setPassword);
 router.post('/logout', authController.logout);
 router.get('/verify', authController.verify);
 router.get('/verify-email', authController.verifyEmail);
+router.post('/resend-verification', authController.resendVerification);
 router.put('/profile', authenticate, authController.updateProfile);
 router.put('/admin/profile', authenticate, authController.updateAdminProfile);
 

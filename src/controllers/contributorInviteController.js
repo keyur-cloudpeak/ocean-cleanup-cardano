@@ -7,6 +7,8 @@ import {
   createUser,
   generateUniqueUsername,
   updateUserRole,
+  findUserById,
+  isPendingContributorInvite,
   setUserPasswordResetToken,
   deleteUserById
 } from '../services/userService.js';
@@ -18,12 +20,6 @@ function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
 }
 
-// An invited contributor who hasn't opened the link yet: created by an invite
-// (no verification token, since signups always get one) and never verified.
-function isPendingInvite(user) {
-  return user.role === 'contributor' && !user.emailVerifiedAt && !user.hasVerificationToken;
-}
-
 async function issueInvite(user, firstName) {
   const inviteToken = crypto.randomBytes(32).toString('hex');
   await setUserPasswordResetToken(user.id, {
@@ -31,7 +27,7 @@ async function issueInvite(user, firstName) {
     expiresAt: new Date(Date.now() + INVITE_TOKEN_TTL_MS).toISOString()
   });
 
-  const inviteUrl = `${env.apiBaseUrl}/api/auth/reset-password?token=${inviteToken}`;
+  const inviteUrl = `${env.apiBaseUrl}/api/auth/reset-password?token=${inviteToken}&type=invite`;
   return sendContributorInviteEmail({ to: user.email, firstName, inviteUrl });
 }
 
@@ -78,7 +74,7 @@ async function inviteImpl(req, res) {
   if (existingUser) {
     if (existingUser.role === 'contributor') {
       // A contributor who never opened their invite can be re-invited.
-      if (isPendingInvite(existingUser)) {
+      if (isPendingContributorInvite(existingUser)) {
         const emailResult = await issueInvite(existingUser, firstName || existingUser.firstName);
         return res.json({
           ok: true,
@@ -140,6 +136,23 @@ async function inviteImpl(req, res) {
   });
 }
 
-export const invite = asyncHandler(inviteImpl);
+// ─── DELETE /api/admin/contributors/:id ────────────────────────────────────
+// Cancels an invite that hasn't been accepted. Active accounts are never
+// removed here.
+async function cancelInviteImpl(req, res) {
+  const user = await findUserById(req.params.id);
+  if (!user) {
+    return res.status(404).json({ ok: false, error: 'Invite not found' });
+  }
+  if (!isPendingContributorInvite(user)) {
+    return res.status(400).json({ ok: false, error: 'Only pending invites can be cancelled' });
+  }
 
-export default { invite };
+  await deleteUserById(user.id);
+  res.json({ ok: true, message: 'Invite cancelled' });
+}
+
+export const invite = asyncHandler(inviteImpl);
+export const cancelInvite = asyncHandler(cancelInviteImpl);
+
+export default { invite, cancelInvite };

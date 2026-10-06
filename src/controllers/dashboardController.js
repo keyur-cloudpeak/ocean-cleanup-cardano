@@ -1,5 +1,5 @@
 import { getDashboardStats } from '../services/activityService.js';
-import { getUsers, setUserActiveStatus as setUserActiveStatusInService } from '../services/userService.js';
+import { getUsers, isPendingContributorInvite, setUserActiveStatus as setUserActiveStatusInService } from '../services/userService.js';
 import { listOrganizations, createOrganization, addOrganizationMembership } from '../services/organizationService.js';
 import { listNotificationsForRecipient, markNotificationReadById } from '../services/notificationService.js';
 import asyncHandler from '../middleware/asyncHandler.js';
@@ -22,8 +22,16 @@ async function getUserLists(req, res) {
     }));
   const contributors = allUsers
     .filter((u) => u.role === 'contributor')
-    .map(({ id, firstName, lastName, username, email, active, organizationId, createdAt }) => ({
-      id, firstName, lastName, username, email, active, organizationId, createdAt
+    .map((u) => ({
+      id: u.id,
+      firstName: u.firstName,
+      lastName: u.lastName,
+      username: u.username,
+      email: u.email,
+      active: u.active,
+      organizationId: u.organizationId,
+      createdAt: u.createdAt,
+      invitePending: isPendingContributorInvite(u)
     }));
   const citizens = allUsers
     .filter((u) => u.role === 'citizen')

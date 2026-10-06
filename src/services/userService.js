@@ -24,6 +24,7 @@ function mapUserRow(row) {
     active: row.is_active,
     emailVerifiedAt: row.email_verified_at || null,
     hasVerificationToken: Boolean(row.email_verification_token_hash),
+    emailVerificationExpiresAt: row.email_verification_token_expires_at || null,
     organizationId: row.organization_id || null,
     jobTitle: row.job_title || null,
     yearsExperience: row.years_experience || null,
@@ -34,7 +35,7 @@ function mapUserRow(row) {
 
 export async function getUsers() {
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, email_verification_token_hash, email_verification_token_expires_at, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
      ORDER BY created_at DESC`
   );
@@ -48,7 +49,7 @@ export async function saveUsers() {
 export async function findUserByUsername(username) {
   const normalizedUsername = normalizeUsername(username);
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, email_verification_token_hash, email_verification_token_expires_at, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
      WHERE LOWER(username) = $1
      LIMIT 1`,
@@ -61,7 +62,7 @@ export async function findUserByUsername(username) {
 export async function findUserByEmail(email) {
   const normalizedEmail = normalizeEmail(email);
   const result = await query(
-    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, email_verification_token_hash, organization_id, job_title, years_experience, profile_image_url, created_at
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, email_verification_token_hash, email_verification_token_expires_at, organization_id, job_title, years_experience, profile_image_url, created_at
      FROM users
      WHERE LOWER(email) = $1
      LIMIT 1`,
@@ -281,6 +282,43 @@ export async function updateUserRole(id, role) {
      WHERE id = $1
      RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at`,
     [id, role]
+  );
+
+  return mapUserRow(result.rows[0]);
+}
+
+// A contributor created by an admin invite who hasn't opened the link yet:
+// never verified, and (unlike self-signups) never given a verification token.
+export function isPendingContributorInvite(user) {
+  return Boolean(user)
+    && user.role === 'contributor'
+    && !user.emailVerifiedAt
+    && !user.hasVerificationToken;
+}
+
+// Same lookup as findUserByEmailVerificationToken but ignores expiry, so an
+// expired link can be told apart from one that was never valid.
+export async function findUserByEmailVerificationTokenAnyExpiry(token) {
+  const tokenHash = crypto.createHash('sha256').update(String(token || '')).digest('hex');
+  const result = await query(
+    `SELECT id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, email_verification_token_hash, email_verification_token_expires_at, organization_id, job_title, years_experience, profile_image_url, created_at
+     FROM users
+     WHERE email_verification_token_hash = $1
+     LIMIT 1`,
+    [tokenHash]
+  );
+
+  return mapUserRow(result.rows[0]);
+}
+
+export async function setUserEmailVerificationToken(id, { tokenHash, expiresAt }) {
+  const result = await query(
+    `UPDATE users
+     SET email_verification_token_hash = $2,
+         email_verification_token_expires_at = $3
+     WHERE id = $1
+     RETURNING id, first_name, last_name, email, username, password_hash, role, is_active, email_verified_at, organization_id, job_title, years_experience, profile_image_url, created_at`,
+    [id, tokenHash, expiresAt]
   );
 
   return mapUserRow(result.rows[0]);
